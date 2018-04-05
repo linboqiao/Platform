@@ -1,0 +1,23 @@
+<!--
+Copyright (c) 2017 Merantix GmbH
+All rights reserved. This program and the accompanying materials
+are made available under the terms of the Eclipse Public License v1.0
+which accompanies this distribution, and is available at
+http://www.eclipse.org/legal/epl-v10.html
+
+Contributors:
+   Ryan Henderson - initial API and implementation and/or initial
+   documentation
+-->
+{% extends "layout.html" %}
+{% block body %}
+<div class="alert alert-danger text-center" role="alert">
+	<h1>500 Internal Server Error</h1>
+</div>
+
+<h3>Something went wrong.  Perhaps you tried to upload a non-image file?  In that case, <a href="{{ url_for('picasso.landing') }}">start over and try again.</a></h3>
+
+<h3>If you're running locally, you can <a href="http://flask.pocoo.org/docs/latest/quickstart/">restart Flask in debug mode</a> and look at the stack trace.</h3>
+
+<h3>Finally, if you've found a bug, please <a href="https://github.com/merantix/picasso/issues">file an issue!</a></h3>
+{% endblock %}
