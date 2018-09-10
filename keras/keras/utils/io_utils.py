@@ -58,6 +58,12 @@ class HDF5Matrix(object):
         else:
             self.end = end
         self.normalizer = normalizer
+        if self.normalizer is not None:
+            first_val = self.normalizer(self.data[0:1])
+        else:
+            first_val = self.data[0:1]
+        self._base_shape = first_val.shape[1:]
+        self._base_dtype = first_val.dtype
 
     def __len__(self):
         return self.end - self.start
@@ -83,13 +89,12 @@ class HDF5Matrix(object):
                 idx = (self.start + key).tolist()
             else:
                 raise IndexError
-        elif isinstance(key, list):
+        else:
+            # Assume list/iterable
             if max(key) + self.start < self.end:
                 idx = [x + self.start for x in key]
             else:
                 raise IndexError
-        else:
-            raise IndexError
         if self.normalizer is not None:
             return self.normalizer(self.data[idx])
         else:
@@ -102,7 +107,7 @@ class HDF5Matrix(object):
         # Returns
             A numpy-style shape tuple.
         """
-        return (self.end - self.start,) + self.data.shape[1:]
+        return (self.end - self.start,) + self._base_shape
 
     @property
     def dtype(self):
@@ -111,7 +116,7 @@ class HDF5Matrix(object):
         # Returns
             A numpy dtype string.
         """
-        return self.data.dtype
+        return self._base_dtype
 
     @property
     def ndim(self):
