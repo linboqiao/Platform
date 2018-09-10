@@ -36,12 +36,13 @@ class ComputeModel:
         self.output_shape = self.map.GetOutputShape()
 
     def transform(self, x):
+        """ call the ell model with input array 'x' and return the output as numpy array """
         # Turn the input into something the model can read
         in_vec = np.array(x).astype(np.float32).ravel()
 
         # Send the input to the predict function and return the prediction result
         return np.array(self.map.Compute(in_vec, dtype=np.float32))
 
-    def reload(self):
-        """ reload the map, hence resetting all model state """
-        self.map = ell.model.Map(model_path)
+    def reset(self):
+        """ reset all model state """
+        self.map.Reset()

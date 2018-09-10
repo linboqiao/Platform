@@ -12,6 +12,7 @@
 
 // utilities
 #include "Exception.h"
+#include "StringUtil.h"
 
 namespace ell
 {
@@ -125,7 +126,11 @@ namespace model
         }
 
         result.Consolidate();
-        assert(result.Size() == queryElements.Size());
+        if (result.Size() != queryElements.Size())
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::sizeMismatch, 
+                utilities::FormatString("Model transformation resulted in a mismatching port size, expecting %lld, but found %lld", queryElements.Size(), result.Size()));
+        }
         return result;
     }
 
@@ -150,24 +155,12 @@ namespace model
     //
     Model ModelTransformer::CopyModel(const Model& oldModel, const TransformContext& context)
     {
-        _context = context;
-        _model = Model();
-        _elementsMap.Clear();
-        oldModel.Visit([this](const Node& node) { node.InvokeCopy(*this); });
-        _context = TransformContext();
-
-        return std::move(_model);
+        return CopyModel(oldModel, std::vector<const Node*>{}, context);
     }
 
     Model ModelTransformer::CopyModel(const Model& oldModel, const Node* outputNode, const TransformContext& context)
     {
-        _context = context;
-        _model = Model();
-        _elementsMap.Clear();
-        oldModel.VisitSubset(outputNode, [this](const Node& node) { node.InvokeCopy(*this); });
-        _context = TransformContext();
-
-        return std::move(_model);
+        return CopyModel(oldModel, std::vector<const Node*>{outputNode}, context);
     }
 
     Model ModelTransformer::CopyModel(const Model& oldModel, const std::vector<const Node*>& outputNodes, const TransformContext& context)
@@ -177,6 +170,21 @@ namespace model
         _elementsMap.Clear();
         oldModel.VisitSubset(outputNodes, [this](const Node& node) { node.InvokeCopy(*this); });
         _context = TransformContext();
+        // Copy all the node metadata
+        oldModel.VisitSubset(outputNodes, [this](const Node& node) {
+            if (node.NumOutputPorts() > 0)
+            {
+                auto ranges = (_elementsMap.GetCorrespondingPortElements(*node.GetOutputPort(0))).GetRanges();
+                if (ranges.size() > 0)
+                {
+                    auto newNode = const_cast<Node*>(ranges[0].ReferencedPort()->GetNode());
+                    if (newNode)
+                    {
+                        newNode->GetMetadata() = node.GetMetadata();
+                    }
+                }
+            }
+        });        
 
         return std::move(_model);
     }
@@ -264,7 +272,9 @@ namespace model
 
     void ModelTransformer::Reset()
     {
-        _elementsMap.Clear();        
+        _context = TransformContext(); // reset context
+        _elementsMap.Clear();
+        _isModelCompilable = false;
     }
 
     PortElementsBase ModelTransformer::TransformPortElements(const PortElementsBase& elements) const

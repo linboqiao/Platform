@@ -87,6 +87,11 @@ private:
     }
 };
 
+std::string GetObjExtension(model::IRCompiledMap& map)
+{
+    return ".o";
+}
+
 void ProduceMapOutput(ParsedCompileArguments& compileArguments, common::ParsedMapCompilerArguments& mapCompilerArguments, common::MapLoadArguments& mapLoadArguments, model::Map& map)
 {
     std::stringstream timingOutput;
@@ -117,6 +122,7 @@ void ProduceMapOutput(ParsedCompileArguments& compileArguments, common::ParsedMa
 
     model::IRMapCompiler compiler(settings);
     TimingOutputCollector timer(timingOutput, "Time to compile map", compileArguments.verbose);
+
     auto compiledMap = compiler.Compile(map);
     timer.Stop();
 
@@ -150,7 +156,7 @@ void ProduceMapOutput(ParsedCompileArguments& compileArguments, common::ParsedMa
         if (compileArguments.outputObjectCode)
         {
             TimingOutputCollector timer(timingOutput, "Time to save object code", compileArguments.verbose);
-            compiledMap.WriteCode(baseFilename + ".o", emitters::ModuleOutputFormat::objectCode);
+            compiledMap.WriteCode(baseFilename + GetObjExtension(compiledMap), emitters::ModuleOutputFormat::objectCode);
         }
     }
     if (compileArguments.outputSwigInterface)

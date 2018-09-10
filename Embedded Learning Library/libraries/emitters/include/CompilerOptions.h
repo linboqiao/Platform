@@ -10,6 +10,9 @@
 
 #include "TargetDevice.h"
 
+// utilities
+#include "Optional.h"
+
 namespace ell
 {
 namespace emitters
@@ -21,7 +24,7 @@ namespace emitters
         openBLAS,
         atlas
     };
-    
+
     /// <summary> Standard compiler switches. </summary>
     struct CompilerOptions
     {
@@ -31,12 +34,15 @@ namespace emitters
         int vectorWidth = 4;
         bool useBlas = true;
         BlasType blasType = BlasType::unknown;
+        bool profile = false;
         bool optimize = true;
         bool includeDiagnosticInfo = false;
         bool parallelize = false;
         bool useThreadPool = true;
         int maxThreads = 4;
+        bool useFastMath = true;
         bool debug = false;
+        utilities::Optional<bool> positionIndependentCode;
 
         TargetDevice targetDevice;
     };

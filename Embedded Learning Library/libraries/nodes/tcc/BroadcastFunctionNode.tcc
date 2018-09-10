@@ -6,8 +6,6 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "Unused.h"
-
 namespace ell
 {
 namespace nodes
@@ -106,8 +104,14 @@ namespace nodes
                                                                           const model::PortMemoryLayout& outputLayout,
                                                                           FunctionType function,
                                                                           ValueType paddingValue)
-        : CompilableNode(inputs, outputs), _inputLayout(inputLayout), _outputLayout(outputLayout), _broadcastDimension(broadcastDimension), _function(function), _paddingValue(paddingValue)
+        : CompilableNode(inputs, outputs), _inputLayout(inputLayout), _broadcastDimension(broadcastDimension), _function(function), _paddingValue(paddingValue)
     {
+    }
+
+    template <typename ValueType, typename FunctionType>
+    model::PortMemoryLayout BroadcastFunctionNode<ValueType, FunctionType>::GetOutputMemoryLayout() const
+    {
+        return GetOutputPort(0)->GetMemoryLayout();
     }
 
     //
@@ -139,11 +143,12 @@ namespace nodes
         //       Or, instead of unrolling, vectorizing:  if broadcastDimension = 1, let secondaryValue be a vector and load it one loop previous
         //       If broadcastDimension = outermost dimension (0), we may want to parallelize over that dimension
         const auto numDimensions = NumPrimaryInputDimensions();
-        auto&& inputLayout = GetInputLayout();
+        auto&& inputLayout = GetInputMemoryLayout();
         auto&& inputStride = inputLayout.GetStride();
         auto&& inputOffset = inputLayout.GetOffset();
         auto&& inputSize = inputLayout.GetActiveSize();
-        auto&& outputLayout = GetOutputLayout();
+        auto&& outputLayout = GetOutputMemoryLayout();
+        auto&& outputStride = outputLayout.GetStride();
         auto&& outputOffset = outputLayout.GetOffset();
         auto&& primaryInput = GetPrimaryInput();
         const auto broadcastDimension = GetBroadcastDimension();
@@ -160,6 +165,7 @@ namespace nodes
             if (dimension != 0)
             {
                 thisInputDimensionOffset += prevInputDimensionOffset * inputStride[dimension];
+                thisOutputDimensionOffset += prevOutputDimensionOffset * outputStride[dimension];
             }
 
             if (dimension == broadcastDimension)
@@ -167,9 +173,21 @@ namespace nodes
                 for (int index = 0; index < numSecondaryInputs; ++index)
                 {
                     auto&& secondaryInput = GetSecondaryInput(index);
-                    if (secondaryInput->Size() > 0) // input is present
+                    if (IsSecondaryInputPresent(index))
                     {
                         secondaryValues[index] = (*secondaryInput)[loopIndex];
+                    }
+                    else
+                    {
+                        // Dubious hack to deal with linear function nodes missing a coefficient
+                        if (std::is_same<FunctionType, BroadcastLinearFunction<ValueType>>::value && index == 0) // "scale" value, which should be 1 if not specified
+                        {
+                            secondaryValues[index] = static_cast<ValueType>(1.0);
+                        }
+                        else
+                        {
+                            secondaryValues[index] = 0;
+                        }
                     }
                 }
             }
@@ -203,8 +221,6 @@ namespace nodes
 
         // ASSUME dimension == 0 --- we're only parallelizing on the outermost loop
         int dimension = 0;
-        llvm::Value* prevInputDimensionOffset = nullptr;
-        llvm::Value* prevOutputDimensionOffset = nullptr;
 
         emitters::LLVMTypeList argTypes = portTypes;
         // int numValuePorts = 2 + NumSecondaryInputs(); // primary input, secondary inputs, output
@@ -233,8 +249,10 @@ namespace nodes
                 secondaryValues.push_back(nullptr);
             }
             auto output = &(*arguments++);
-            auto begin = &(*arguments++);
-            auto end = &(*arguments++);
+            auto begin = function.LocalScalar(&(*arguments++));
+            auto end = function.LocalScalar(&(*arguments++));
+            auto prevInputDimensionOffset = function.LocalScalar();
+            auto prevOutputDimensionOffset = function.LocalScalar();
 
             EmitComputeDimensionLoop(compiler, taskFunction, dimension, begin, end, primaryInput, secondaryInputs, output, prevInputDimensionOffset, prevOutputDimensionOffset, secondaryValues);
             taskFunction.Return();
@@ -248,56 +266,50 @@ namespace nodes
     template <typename ValueType, typename FunctionType>
     void BroadcastFunctionNode<ValueType, FunctionType>::EmitComputeDimensionLoop(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function,
                                                                                   size_t dimension,
-                                                                                  llvm::Value* begin,
-                                                                                  llvm::Value* end,
+                                                                                  emitters::IRLocalScalar begin,
+                                                                                  emitters::IRLocalScalar end,
                                                                                   llvm::Value* primaryInput, const std::vector<llvm::Value*>& secondaryInputs,
                                                                                   llvm::Value* output,
-                                                                                  llvm::Value* prevInputDimensionOffset, llvm::Value* prevOutputDimensionOffset,
+                                                                                  emitters::IRLocalScalar prevInputDimensionOffset, emitters::IRLocalScalar prevOutputDimensionOffset,
                                                                                   std::vector<llvm::Value*>& secondaryValues) const
     {
         // Note: It should be easy to unroll the last K levels by putting a real loop here when dimension < k
         //       Or, instead of unrolling, vectorizing --- if broadcastDimension = 1, let secondaryValue be a vector and load it one loop previous
         //       If broadcastDimension = outermost dimension (0), we may want to parallelize over that dimension
         const auto numDimensions = NumPrimaryInputDimensions();
-        auto&& inputLayout = GetInputLayout();
+        auto&& inputLayout = GetInputMemoryLayout();
         auto&& inputStride = inputLayout.GetStride();
         auto&& inputOffset = inputLayout.GetOffset();
         auto&& inputSize = inputLayout.GetActiveSize();
-        auto&& outputLayout = GetOutputLayout();
+        auto&& outputLayout = GetOutputMemoryLayout();
         auto&& outputStride = outputLayout.GetStride();
         auto&& outputOffset = outputLayout.GetOffset();
         const auto broadcastDimension = GetBroadcastDimension();
         const auto numSecondaryInputs = NumSecondaryInputs();
+        const auto primaryInputSize = GetPrimaryInputSize();
         const auto secondaryInputSize = GetSecondaryInputSize();
 
-        auto loop = function.ForLoop();
-        loop.Begin(begin, end, function.Literal(1));
-        {
-            auto loopIndex = loop.LoadIterationVariable();
-
+        function.For(begin, end, [dimension, numDimensions, inputSize, inputOffset, inputStride, outputOffset, outputStride, broadcastDimension, primaryInputSize, numSecondaryInputs, secondaryInputSize, prevInputDimensionOffset, prevOutputDimensionOffset, primaryInput, secondaryInputs, output, &secondaryValues, &compiler, this](emitters::IRFunctionEmitter& function, auto loopIndex) {
             // Calculate the offset within this dimension = (loopIndex + offset[dimension])
-            llvm::Value* thisInputDimensionInternalOffset = function.Operator(emitters::GetAddForValueType<int>(), loopIndex, function.Literal<int>(inputOffset[dimension]));
-            llvm::Value* thisOutputDimensionInternalOffset = function.Operator(emitters::GetAddForValueType<int>(), loopIndex, function.Literal<int>(outputOffset[dimension]));
+            auto thisInputDimensionInternalOffset = loopIndex + inputOffset[dimension];
+            auto thisOutputDimensionInternalOffset = loopIndex + outputOffset[dimension];
 
             // Calculate the total offset from beginning of memory:
             //   * if in the outermost loop, the offset into this dimension
             //   * otherwise, the offset into this dimension plus the previous offset scaled by the previous dimension's stride
-            llvm::Value* thisInputDimensionOffset = nullptr;
-            llvm::Value* thisOutputDimensionOffset = nullptr;
+            auto thisInputDimensionOffset = function.LocalScalar();
+            auto thisOutputDimensionOffset = function.LocalScalar();
             if (dimension == 0)
             {
-                assert(prevInputDimensionOffset == nullptr);
-                assert(prevOutputDimensionOffset == nullptr);
+                assert(!prevInputDimensionOffset.IsValid());
+                assert(!prevOutputDimensionOffset.IsValid());
                 thisInputDimensionOffset = thisInputDimensionInternalOffset;
                 thisOutputDimensionOffset = thisOutputDimensionInternalOffset;
             }
             else
             {
-                auto scaledInputDimensionOffset = function.Operator(emitters::GetMultiplyForValueType<int>(), prevInputDimensionOffset, function.Literal<int>(inputStride[dimension]));
-                thisInputDimensionOffset = function.Operator(emitters::GetAddForValueType<int>(), scaledInputDimensionOffset, thisInputDimensionInternalOffset);
-
-                auto scaledOutputDimensionOffset = function.Operator(emitters::GetMultiplyForValueType<int>(), prevOutputDimensionOffset, function.Literal<int>(outputStride[dimension]));
-                thisOutputDimensionOffset = function.Operator(emitters::GetAddForValueType<int>(), scaledOutputDimensionOffset, thisOutputDimensionInternalOffset);
+                thisInputDimensionOffset = thisInputDimensionInternalOffset + (prevInputDimensionOffset * inputStride[dimension]);
+                thisOutputDimensionOffset = thisOutputDimensionInternalOffset + (prevOutputDimensionOffset * outputStride[dimension]);
             }
 
             if (dimension == broadcastDimension)
@@ -307,12 +319,11 @@ namespace nodes
                     auto&& secondaryInput = secondaryInputs[index];
                     if (secondaryInputSize == 1) // scalar
                     {
-                        secondaryValues[index] = IsSecondaryInputPresent(index) ? secondaryInput : nullptr;
+                        secondaryValues[index] = this->IsSecondaryInputPresent(index) ? secondaryInput : nullptr;
                     }
                     else
                     {
-                        //                        assert(IsSecondaryInputPresent(index) == (secondaryInput != nullptr));
-                        secondaryValues[index] = IsSecondaryInputPresent(index) ? function.ValueAt(secondaryInput, loopIndex) : nullptr;
+                        secondaryValues[index] = this->IsSecondaryInputPresent(index) ? function.ValueAt(secondaryInput, loopIndex) : nullptr;
                     }
                 }
             }
@@ -320,19 +331,18 @@ namespace nodes
             if (dimension < numDimensions - 1)
             {
                 // Recursive call to emit nested loop
-                auto nextBegin = function.Literal<int>(0);
-                auto nextEnd = function.Literal<int>(inputSize[dimension + 1]);
-                EmitComputeDimensionLoop(compiler, function, dimension + 1, nextBegin, nextEnd, primaryInput, secondaryInputs, output, thisInputDimensionOffset, thisOutputDimensionOffset, secondaryValues);
+                auto nextBegin = function.LocalScalar<int>(0);
+                auto nextEnd = function.LocalScalar<int>(inputSize[dimension + 1]);
+                this->EmitComputeDimensionLoop(compiler, function, dimension + 1, nextBegin, nextEnd, primaryInput, secondaryInputs, output, thisInputDimensionOffset, thisOutputDimensionOffset, secondaryValues);
             }
             else
             {
                 // We're in the innermost loop --- compute the value
-                auto primaryValue = function.ValueAt(primaryInput, thisInputDimensionOffset);
-                auto outputValue = GetFunction().Compile(function, primaryValue, secondaryValues);
+                auto primaryValue = primaryInputSize == 1 && !primaryInput->getType()->isPointerTy() ? primaryInput : function.ValueAt(primaryInput, thisInputDimensionOffset);
+                auto outputValue = this->GetFunction().Compile(function, primaryValue, secondaryValues);
                 function.SetValueAt(output, thisOutputDimensionOffset, outputValue);
             }
-        }
-        loop.End();
+        });
     }
 
     template <typename ValueType, typename FunctionType>
@@ -352,7 +362,7 @@ namespace nodes
     template <typename ValueType, typename FunctionType>
     void BroadcastFunctionNode<ValueType, FunctionType>::Compute() const
     {
-        auto outputSize = model::NumElements(GetOutputLayout().GetStride());
+        auto outputSize = GetOutputMemoryLayout().GetStride().NumElements();
         auto output = std::vector<ValueType>(outputSize);
 
         const size_t prevInputOffset = 0;
@@ -375,7 +385,7 @@ namespace nodes
 
         const auto& primaryInput = GetPrimaryInput();
         auto primaryInputSize = primaryInput.Size();
-        auto&& inputLayout = GetInputLayout();
+        auto&& inputLayout = GetInputMemoryLayout();
         auto&& inputSize = inputLayout.GetActiveSize();
         auto secondaryInputSize = GetSecondaryInputSize();
         DEBUG_USED(secondaryInputSize);
@@ -397,9 +407,6 @@ namespace nodes
         // Call recursive function to emit nested loops
         // Note: We could just offset the input pointer at beginning instead of adding offset every time through the loop
         // Note: We can potentially fuse adjacent loops if memory is contiguous --- it can be done by preprocessing size/stride vectors
-        llvm::Value* prevInputDimensionOffset = nullptr;
-        llvm::Value* prevOutputDimensionOffset = nullptr;
-
         bool allSecondaryInputsValid = true;
         for (int index = 0; index < NumSecondaryInputs(); ++index)
         {
@@ -451,8 +458,10 @@ namespace nodes
         }
         else
         {
-            auto begin = function.Literal<int>(0);
-            auto end = function.Literal<int>(inputSize[0]);
+            auto prevInputDimensionOffset = function.LocalScalar();
+            auto prevOutputDimensionOffset = function.LocalScalar();
+            auto begin = function.LocalScalar<int>(0);
+            auto end = function.LocalScalar<int>(inputSize[0]);
             EmitComputeDimensionLoop(compiler, function, 0, begin, end, pPrimaryInput, secondaryInputs, pOutput, prevInputDimensionOffset, prevOutputDimensionOffset, secondaryValues);
         }
     }
@@ -463,7 +472,7 @@ namespace nodes
         model::CompilableNode::WriteToArchive(archiver);
 
         archiver["inputLayout"] << _inputLayout;
-        archiver["outputLayout"] << _outputLayout;
+        archiver["outputLayout"] << GetOutputMemoryLayout();
         archiver["broadcastDimension"] << _broadcastDimension;
         archiver["paddingValue"] << _paddingValue;
     }
@@ -474,7 +483,13 @@ namespace nodes
         model::CompilableNode::ReadFromArchive(archiver);
 
         archiver["inputLayout"] >> _inputLayout;
-        archiver["outputLayout"] >> _outputLayout;
+        model::PortMemoryLayout outputLayout;
+        archiver["outputLayout"] >> outputLayout;
+        auto outputs = GetOutputPorts();
+        for(auto p: outputs)
+        {
+            p->SetMemoryLayout(outputLayout);
+        }
         archiver["broadcastDimension"] >> _broadcastDimension;
         archiver["paddingValue"] >> _paddingValue;
     }
@@ -503,7 +518,7 @@ namespace nodes
                                                                                     ValueType paddingValue)
         : BroadcastFunctionNode<ValueType, FunctionType>({ &_primaryInput }, inputLayout, 0, { &_output }, outputLayout, function, paddingValue)
         , _primaryInput(this, primaryInput, primaryInputPortName)
-        , _output(this, ell::model::Node::defaultOutputPortName, model::NumElements(outputLayout.GetStride()))
+        , _output(this, ell::model::Node::defaultOutputPortName, outputLayout)
     {
         // Verify sizes are compatible
         size_t totalInputSize = inputLayout.GetMemorySize();
@@ -519,8 +534,8 @@ namespace nodes
         auto primaryInputElements = transformer.TransformPortElements(_primaryInput.GetPortElements());
         auto broadcastFunction = GetFunction();
         auto newNode = transformer.AddNode<BroadcastUnaryFunctionNode<ValueType, FunctionType>>(primaryInputElements,
-                                                                                                this->GetInputLayout(),
-                                                                                                this->GetOutputLayout(),
+                                                                                                this->GetInputMemoryLayout(),
+                                                                                                this->GetOutputMemoryLayout(),
                                                                                                 broadcastFunction);
         transformer.MapNodeOutput(output, newNode->output);
     }
@@ -553,7 +568,6 @@ namespace nodes
     {
         BroadcastFunctionNode<ValueType, FunctionType>::ReadFromArchive(archiver);
         archiver[primaryInputPortName] >> _primaryInput;
-        _output.SetSize(_primaryInput.Size()); // ???
     }
 
     template <typename ValueType, typename FunctionType>
@@ -592,7 +606,7 @@ namespace nodes
                                                          { &_output }, outputLayout, function, paddingValue)
         , _primaryInput(this, primaryInput, primaryInputPortName)
         , _secondaryInput(this, secondaryInput, secondaryInputPortName)
-        , _output(this, ell::model::Node::defaultOutputPortName, model::NumElements(outputLayout.GetStride()))
+        , _output(this, ell::model::Node::defaultOutputPortName, outputLayout)
     {
         // Verify sizes are compatible
         size_t totalInputSize = inputLayout.GetMemorySize();
@@ -613,10 +627,10 @@ namespace nodes
         auto primaryInputElements = transformer.TransformPortElements(_primaryInput.GetPortElements());
         auto secondaryInputElements = transformer.TransformPortElements(_secondaryInput.GetPortElements());
         auto newNode = transformer.AddNode<BroadcastBinaryFunctionNode<ValueType, FunctionType>>(primaryInputElements,
-                                                                                                 this->GetInputLayout(),
+                                                                                                 this->GetInputMemoryLayout(),
                                                                                                  secondaryInputElements,
                                                                                                  this->GetBroadcastDimension(),
-                                                                                                 this->GetOutputLayout(),
+                                                                                                 this->GetOutputMemoryLayout(),
                                                                                                  GetFunction());
         transformer.MapNodeOutput(output, newNode->output);
     }
@@ -635,7 +649,6 @@ namespace nodes
         BroadcastFunctionNode<ValueType, FunctionType>::ReadFromArchive(archiver);
         archiver[primaryInputPortName] >> _primaryInput;
         archiver[secondaryInputPortName] >> _secondaryInput;
-        _output.SetSize(_primaryInput.Size());
     }
 
     template <typename ValueType, typename FunctionType>
@@ -676,7 +689,7 @@ namespace nodes
         , _primaryInput(this, primaryInput, primaryInputPortName)
         , _secondaryInput1(this, secondaryInput1, secondaryInput1PortName)
         , _secondaryInput2(this, secondaryInput2, secondaryInput2PortName)
-        , _output(this, ell::model::Node::defaultOutputPortName, model::NumElements(outputLayout.GetStride()))
+        , _output(this, ell::model::Node::defaultOutputPortName, outputLayout)
     {
         // Verify sizes are compatible
         size_t totalInputSize = inputLayout.GetMemorySize();
@@ -695,7 +708,7 @@ namespace nodes
             throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "If present, secondary inputs must have the same size");
         }
 
-        if (!model::ShapesEqual(inputLayout.GetActiveSize(), outputLayout.GetActiveSize()))
+        if (inputLayout.GetActiveSize() != outputLayout.GetActiveSize())
         {
             throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Input and output active area sizes don't match");
         }
@@ -708,11 +721,11 @@ namespace nodes
         auto secondaryInput1Elements = transformer.TransformPortElements(_secondaryInput1.GetPortElements());
         auto secondaryInput2Elements = transformer.TransformPortElements(_secondaryInput2.GetPortElements());
         auto newNode = transformer.AddNode<BroadcastTernaryFunctionNode<ValueType, FunctionType>>(primaryInputElements,
-                                                                                                  this->GetInputLayout(),
+                                                                                                  this->GetInputMemoryLayout(),
                                                                                                   secondaryInput1Elements,
                                                                                                   secondaryInput2Elements,
                                                                                                   this->GetBroadcastDimension(),
-                                                                                                  this->GetOutputLayout(),
+                                                                                                  this->GetOutputMemoryLayout(),
                                                                                                   GetFunction());
         transformer.MapNodeOutput(output, newNode->output);
     }
@@ -733,7 +746,6 @@ namespace nodes
         archiver[primaryInputPortName] >> _primaryInput;
         archiver[secondaryInput1PortName] >> _secondaryInput1;
         archiver[secondaryInput2PortName] >> _secondaryInput2;
-        _output.SetSize(_primaryInput.Size());
     }
 
     template <typename ValueType, typename FunctionType>
@@ -778,11 +790,11 @@ namespace nodes
         auto scaleInputElements = transformer.TransformPortElements(secondaryInput1.GetPortElements());
         auto biasInputElements = transformer.TransformPortElements(secondaryInput2.GetPortElements());
         auto newNode = transformer.AddNode<BroadcastLinearFunctionNode<ValueType>>(primaryInputElements,
-                                                                                   this->GetInputLayout(),
+                                                                                   this->GetInputMemoryLayout(),
                                                                                    scaleInputElements,
                                                                                    biasInputElements,
                                                                                    this->GetBroadcastDimension(),
-                                                                                   this->GetOutputLayout());
+                                                                                   this->GetOutputMemoryLayout());
         transformer.MapNodeOutput(output, newNode->output);
     }
 

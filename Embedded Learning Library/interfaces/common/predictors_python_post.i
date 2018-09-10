@@ -66,9 +66,9 @@ namespace neural
 
     %extend RegionDetectionParameters
     {
-        RegionDetectionParameters(int width, int height, int numBoxesPerCell, int numClasses, int numCoordinates)
+        RegionDetectionParameters(int width, int height, int numBoxesPerCell, int numClasses, int numAnchors, bool applySoftmax)
         {
-            return new ell::predictors::neural::RegionDetectionParameters{width, height, numBoxesPerCell, numClasses, numCoordinates};
+            return new ell::predictors::neural::RegionDetectionParameters{width, height, numBoxesPerCell, numClasses, numAnchors, applySoftmax};
         }
     };
 }
@@ -98,30 +98,36 @@ del PaddingScheme_max
 
 # Python friendly class for LayerType
 class LayerType:
-    base = LayerType_base
     activation = LayerType_activation
+    base = LayerType_base
     batchNormalization = LayerType_batchNormalization
     bias = LayerType_bias
     binaryConvolution = LayerType_binaryConvolution
     convolution = LayerType_convolution
     fullyConnected = LayerType_fullyConnected
+    gru = LayerType_gru
     input = LayerType_input
+    lstm = LayerType_lstm
     pooling = LayerType_pooling
+    recurrent = LayerType_recurrent
+    region = LayerType_region
     scaling = LayerType_scaling
-    softmax = LayerType_softmax
 
 # Remove flat defines so callers only see the class above
-del LayerType_base
 del LayerType_activation
+del LayerType_base
 del LayerType_batchNormalization
 del LayerType_bias
 del LayerType_binaryConvolution
 del LayerType_convolution
 del LayerType_fullyConnected
+del LayerType_gru
 del LayerType_input
+del LayerType_lstm
 del LayerType_pooling
+del LayerType_recurrent
+del LayerType_region
 del LayerType_scaling
-del LayerType_softmax
 
 # Python friendly class for ActivationType
 class ActivationType:
@@ -129,7 +135,6 @@ class ActivationType:
     leaky = ActivationType_leaky
     sigmoid = ActivationType_sigmoid
     tanh = ActivationType_tanh
-    softmax = ActivationType_softmax
     prelu = ActivationType_prelu
     hardSigmoid = ActivationType_hardSigmoid
 
@@ -138,7 +143,6 @@ del ActivationType_relu
 del ActivationType_leaky
 del ActivationType_sigmoid
 del ActivationType_tanh
-del ActivationType_softmax
 del ActivationType_prelu
 del ActivationType_hardSigmoid
 
@@ -171,26 +175,18 @@ del BinaryWeightsScale_mean
 
 # Python friendly class for ConvolutionMethod
 class ConvolutionMethod:
-    unrolled = ConvolutionMethod_unrolled
+    automatic = ConvolutionMethod_automatic
     diagonal = ConvolutionMethod_diagonal
     simple = ConvolutionMethod_simple
+    winograd = ConvolutionMethod_winograd
+    unrolled = ConvolutionMethod_unrolled
 
 # Remove flat defines so callers only see the class above
-del ConvolutionMethod_unrolled
+del ConvolutionMethod_automatic
 del ConvolutionMethod_diagonal
 del ConvolutionMethod_simple
-
-# Python friendly class for LayerType
-class LayerType:
-    gru = LayerType_gru
-    lstm = LayerType_lstm
-    recurrent = LayerType_recurrent
-
-
-del LayerType_gru
-del LayerType_lstm
-del LayerType_recurrent
-
+del ConvolutionMethod_winograd
+del ConvolutionMethod_unrolled
 
 # Python friendly class for EpsilonSummand
 class EpsilonSummand:

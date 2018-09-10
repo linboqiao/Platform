@@ -15,9 +15,7 @@
 // stl
 #include <algorithm>
 #include <unordered_set>
-
 #include <iomanip>
-#include <iostream>
 
 namespace ell
 {
@@ -157,6 +155,11 @@ namespace model
         return ComputeDoubleOutput(elements);
     }
 
+    void Map::Reset()
+    {
+        _model.Reset();
+    }
+
     void Map::AddInput(const std::string& inputName, InputNodeBase* inputNode)
     {
         _inputNodes.push_back(inputNode);
@@ -164,6 +167,13 @@ namespace model
         _inputNodeMap.insert({ inputName, inputNode });
     }
 
+    void Map::RemoveInputs()
+    {
+        _inputNodes.clear();
+        _inputNames.clear();
+        _inputNodeMap.clear();
+    }
+    
     void Map::AddOutput(const std::string& outputName, PortElementsBase outputElements)
     {
         _outputElements.push_back(outputElements);
@@ -262,31 +272,31 @@ namespace model
         }
     }
 
-    void Map::FixTransformedIO(ModelOptimizer& optimizer)
+    void Map::FixTransformedIO(ModelOptimizerContext& context)
     {
         for (auto& inputNode : _inputNodes)
         {
-            auto refinedInput = optimizer.GetCorrespondingInputNode(inputNode);
+            auto refinedInput = context.GetCorrespondingInputNode(inputNode);
             inputNode = refinedInput;
         }
 
         for (auto& inputNode : _inputNodeMap)
         {
             auto input = inputNode.second;
-            auto refinedInput = optimizer.GetCorrespondingInputNode(input);
+            auto refinedInput = context.GetCorrespondingInputNode(input);
             inputNode.second = refinedInput;
         }
 
         for (auto& outputElements : _outputElements)
         {
-            auto refinedOutput = optimizer.GetCorrespondingOutputs(outputElements);
+            auto refinedOutput = context.GetCorrespondingOutputs(outputElements);
             outputElements = refinedOutput;
         }
 
         for (auto& outputElements : _outputElementsMap)
         {
             auto output = outputElements.second;
-            auto refinedOutput = optimizer.GetCorrespondingOutputs(output);
+            auto refinedOutput = context.GetCorrespondingOutputs(output);
             outputElements.second = refinedOutput;
         }
     }
@@ -306,7 +316,7 @@ namespace model
 
     size_t Map::GetInputSize() const
     {
-        return GetInputShape().Size();
+        return GetInputShape().NumElements();
     }
 
     size_t Map::GetOutputSize() const
@@ -314,7 +324,7 @@ namespace model
         return GetOutput(0).Size();
     }
 
-    math::TensorShape Map::GetInputShape() const
+    MemoryShape Map::GetInputShape() const
     {
         auto sourceNodes = _model.GetNodesByType<SourceNodeBase>();
         if (!sourceNodes.empty())
@@ -354,7 +364,7 @@ namespace model
         return result;
     }
 
-    math::TensorShape Map::GetOutputShape() const
+    MemoryShape Map::GetOutputShape() const
     {
         auto outputNodeVec = GetOutputNodes();
         if (!outputNodeVec.empty())
@@ -362,7 +372,7 @@ namespace model
             const OutputNodeBase* node = dynamic_cast<const OutputNodeBase*>(outputNodeVec[0]);
             return node->GetShape();
         }
-        return math::TensorShape(0, 0, 0);
+        return MemoryShape({ 0 });
     }
 
     Port::PortType Map::GetInputType() const
@@ -396,26 +406,27 @@ namespace model
 
         ModelTransformer transformer;
         auto refinedModel = transformer.RefineModel(_model, context, maxIterations);
-        FixTransformedIO(transformer);
 
+        FixTransformedIO(transformer);
         _model = std::move(refinedModel);
         Prune();
     }
 
+    void Map::Optimize(const ModelOptimizer& optimizer)
+    {
+        ModelOptimizerContext context;
+        auto optimizedModel = optimizer.OptimizeModel(_model, context);
+        FixTransformedIO(context);
+        _model = std::move(optimizedModel);
+        Prune();
+    }
+    
     void Map::Transform(const std::function<void(const Node&, ModelTransformer&)>& transformFunction, const TransformContext& context)
     {
         ModelTransformer transformer;
         auto refinedModel = transformer.TransformModel(_model, context, transformFunction);
         FixTransformedIO(transformer);
         _model = std::move(refinedModel);
-    }
-
-    void Map::Optimize(ModelOptimizer& optimizer)
-    {
-        auto optimizedModel = optimizer.OptimizeModel(_model);
-        FixTransformedIO(optimizer);
-        _model = std::move(optimizedModel);
-        Prune();
     }
 
     void Map::RenameCallbacks(const std::string& sourceCallbackName, const std::string& sinkCallbackName)

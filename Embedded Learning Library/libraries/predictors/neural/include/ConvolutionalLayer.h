@@ -9,6 +9,9 @@
 #pragma once
 #include "Layer.h"
 
+// dsp
+#include "Convolution.h"
+
 // math
 #include "Matrix.h"
 
@@ -21,12 +24,16 @@ namespace neural
     /// <summary> The method for performing convolutions. </summary>
     enum class ConvolutionMethod : int
     {
-        /// <summary> Normal method of doing convolution via reshaping input into columns and performing a gemm operation. </summary>
-        unrolled = 0,
+        /// <summary> Allow the function to choose the algorithm to use. </summary>
+        automatic = 0,
         /// <summary> A different method of doing convolution which avoids reshaping the input, and uses gemm on smaller matrices with diagonal sums to create output. </summary>
-        diagonal = 1,
+        diagonal,
         /// <summary> A simple, straightforward nested-loop implementation. </summary>
         simple,
+        /// <summary> An implementation that performs convolution with fewer arithmetic operations. </summary>
+        winograd,
+        /// <summary> Normal method of doing convolution via reshaping input into columns and performing a gemm operation. </summary>
+        unrolled
     };
 
     /// <summary> Specifies the hyper parameters of the convolutional layer. </summary>
@@ -113,6 +120,7 @@ namespace neural
         void ReceptiveFieldToColumns(ConstTensorReferenceType input, MatrixType& shapedInput);
         void ComputeWeightsMatrix();
         void InitializeIOMatrices();
+        void CalculateConvolutionMethod();
 
         using Layer<ElementType>::_layerParameters;
         using Layer<ElementType>::_output;
@@ -123,6 +131,9 @@ namespace neural
         MatrixType _shapedInput;
         MatrixType _weightsMatrix;
         MatrixType _outputMatrix;
+
+        ConvolutionMethod _originalConvolutionMethod;
+        bool _isDepthwiseSeparable = false;
     };
 
 }

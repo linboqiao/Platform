@@ -59,55 +59,6 @@ namespace nodes
             return ((filterVolumeSize - 1) / (8 * sizeof(PackedBitsType)) + 1) * numOutputPixels;
         }
 
-        llvm::Value* GetValueFromVolume(emitters::IRFunctionEmitter& function,
-                                        emitters::IRLocalArray inputVolume,
-                                        const model::PortMemoryLayout& inputLayout,
-                                        const predictors::neural::BinaryConvolutionalParameters& convParams,
-                                        emitters::IRLocalScalar valueRow, emitters::IRLocalScalar valueColumn, emitters::IRLocalScalar valueChannel)
-        {
-            const int columnStride = inputLayout.GetStride(1);
-            const int channelStride = inputLayout.GetStride(2);
-
-            // row, column, channel order
-            auto index = valueRow * (columnStride * channelStride) + valueColumn * channelStride + valueChannel;
-            return static_cast<emitters::IRLocalScalar>(inputVolume[index]);
-        }
-
-        // TODO: adapt this to work with more generally strided data
-        template <typename ValueType>
-        llvm::Function* EmitGetValueFromPaddedVolumeFunction(emitters::IRModuleEmitter& moduleEmitter)
-        {
-            throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
-        }
-
-        template <typename ValueType>
-        llvm::Value* GetValueFromPaddedVolume(emitters::IRFunctionEmitter& function,
-                                              emitters::IRLocalArray inputVolume,
-                                              const model::PortMemoryLayout& inputLayout,
-                                              const predictors::neural::BinaryConvolutionalParameters& convParams,
-                                              size_t convPadding,
-                                              emitters::IRLocalScalar inputRow, emitters::IRLocalScalar inputCol, emitters::IRLocalScalar inputChannel)
-        {
-            const auto inputHeight = inputLayout.GetActiveSize(0);
-            const auto inputWidth = inputLayout.GetActiveSize(1);
-            const auto inputDepth = inputLayout.GetActiveSize(2);
-            const auto inputPadding = inputLayout.GetOffset(0);
-
-            const int extraPadding = convPadding - inputPadding; // amount by which the convolution's desired padding exceeds input's
-            if (extraPadding > 0) // known at compile-time
-            {
-                auto getValueFunction = EmitGetValueFromPaddedVolumeFunction<ValueType>(function.GetModule());
-                return function.Call(getValueFunction, { inputVolume.value, inputRow, inputCol, inputChannel, function.Literal<int>(inputWidth), function.Literal<int>(inputHeight), function.Literal<int>(inputDepth), function.Literal<int>(extraPadding) });
-            }
-
-            if (extraPadding != 0)
-            {
-                inputRow = inputRow + extraPadding;
-                inputCol = inputCol + extraPadding;
-            }
-            return GetValueFromVolume(function, inputVolume, inputLayout, convParams, inputRow, inputCol, inputChannel);
-        }
-
         template <typename ValueType>
         void LoadRow(emitters::IRFunctionEmitter& function,
                      llvm::Value* inputVolume,
@@ -121,7 +72,6 @@ namespace nodes
             const int outputImageWidth = outputLayout.GetActiveSize(1);
             const int filterSize = static_cast<int>(convParams.receptiveField);
             const int stride = static_cast<int>(convParams.stride);
-            const int convPadding = inputLayout.GetOffset(0); // TODO: decouple input data padding from convolution padding
 
             // compute offset based on outputRowIndex
             auto outputImageRow = function.LocalScalar(outputRowIndex) / outputImageWidth;
@@ -129,11 +79,12 @@ namespace nodes
             auto inputRowStart = outputImageRow * stride;
             auto inputColStart = outputImageCol * stride;
 
-            auto input = function.LocalArray(inputVolume);
-            auto output = function.LocalArray(realValueRow);
+            // The input is a filterSize x filterSize x numChannels image in in row x column x channel order
+            auto input = function.LocalTensor(inputVolume, inputLayout.GetStride().ToVector(), emitters::RowMajorTensorLayout);
+            auto output = function.LocalTensor(realValueRow, { filterSize, filterSize, numChannels }, emitters::RowMajorTensorLayout);
 
             // For row, column, channel order:
-            function.For(filterSize, [input, inputLayout, numChannels, outputImageWidth, filterSize, stride, convParams, convPadding, outputImageRow, outputImageCol, inputRowStart, inputColStart, output](emitters::IRFunctionEmitter& function, llvm::Value* i) {
+            function.For(filterSize, [input, inputLayout, numChannels, filterSize, inputRowStart, inputColStart, output](emitters::IRFunctionEmitter& function, llvm::Value* i) {
                 auto rowIndex = function.LocalScalar(i);
 
                 function.For(filterSize, [=](emitters::IRFunctionEmitter& function, llvm::Value* j) {
@@ -145,15 +96,7 @@ namespace nodes
                         auto inputColumn = inputColStart + columnIndex;
                         auto inputChannel = channelIndex;
 
-                        auto value = GetValueFromPaddedVolume<ValueType>(function, input, inputLayout, convParams, convPadding, inputRow, inputColumn, inputChannel);
-
-                        // The input is a filterSize x filterSize x numChannels image in in row x column x channel order
-                        //   so offset = (filterSize*numChannels)*row + numChannels*column + channel
-                        auto rowOffset = rowIndex * (filterSize * numChannels);
-                        auto colOffset = columnIndex * numChannels;
-                        auto channelBeginOffset = rowOffset + colOffset;
-                        auto outputOffset = channelBeginOffset + channelIndex;
-                        output[outputOffset] = value;
+                        output({ rowIndex, columnIndex, channelIndex }) = input({ inputRow, inputColumn, inputChannel });
                     });
                 });
             });
@@ -303,10 +246,10 @@ namespace nodes
             xnorOutput = AddRefinedNodes<int64_t>(transformer, newInput);
         }
 
-        // Output of xnor is in (f x h x w) order, need to transpose to (h x w x f)
-        model::PortMemoryLayout outputShape({ numFilters, outputImageHeight, outputImageWidth });
-        model::PortMemoryLayout transposedOutputShape({ outputImageHeight, outputImageWidth, numFilters }, { outputDataPadding, outputDataPadding, 0 });
-        auto reorderOutputNode = transformer.AddNode<ReorderDataNode<ValueType>>(xnorOutput, outputShape, transposedOutputShape, std::vector<int>{ 1, 2, 0 });
+        // Output of xnor is in (f x h x w) order, need to transpose to the canonical (h x w x f) order
+        model::PortMemoryLayout outputShape(model::MemoryShape{ numFilters, outputImageHeight, outputImageWidth }, model::DimensionOrder{ 2, 0, 1 }); // Note: memory layout constructor takes the sizes in physical dimension order
+        model::PortMemoryLayout transposedOutputShape(model::MemoryShape{ outputImageHeight, outputImageWidth, numFilters }, model::MemoryShape{ outputDataPadding, outputDataPadding, 0 }, model::DimensionOrder{ 0, 1, 2 });
+        auto reorderOutputNode = transformer.AddNode<ReorderDataNode<ValueType>>(xnorOutput, outputShape, transposedOutputShape);
         transformer.MapNodeOutput(this->output, reorderOutputNode->output);
         return true;
     }
@@ -344,6 +287,15 @@ namespace nodes
                                                                                        outputLayout);
 
         return { xnorNode->output };
+    }
+
+
+    template <typename ValueType>
+    void BinaryConvolutionalLayerNode<ValueType>::Copy(model::ModelTransformer& transformer) const
+    {
+        auto newPortElements = transformer.TransformPortElements(this->_input.GetPortElements());
+        auto newNode = transformer.AddNode<BinaryConvolutionalLayerNode<ValueType>>(newPortElements, this->_layer);
+        transformer.MapNodeOutput(this->_output, newNode->output);
     }
 
     //
@@ -524,7 +476,7 @@ namespace nodes
                                                               const predictors::neural::PaddingParameters& inputPaddingParameters,
                                                               const model::PortMemoryLayout& inputMemoryLayout,
                                                               const model::PortMemoryLayout& outputMemoryLayout)
-        : CompilableNode({ &_input, &_inputPaddingMasks, &_inputPaddingMaskSums, &_filterWeights, &_filterMeans }, { &_output }), _input(this, input, defaultInputPortName), _inputPaddingMasks(this, compressedInputPaddingMasks, inputPaddingMasksPortName), _inputPaddingMaskSums(this, inputPaddingMaskSums, inputPaddingMaskSumsPortName), _filterWeights(this, compressedFilterWeights, filterWeightsPortName), _filterMeans(this, filterMeans, filterMeansPortName), _output(this, defaultOutputPortName, outputMemoryLayout.GetMemorySize()), _convolutionalParameters(convolutionalParameters), _inputPaddingParameters(inputPaddingParameters), _inputMemoryLayout(inputMemoryLayout), _outputMemoryLayout(outputMemoryLayout)
+        : CompilableNode({ &_input, &_inputPaddingMasks, &_inputPaddingMaskSums, &_filterWeights, &_filterMeans }, { &_output }), _input(this, input, defaultInputPortName), _inputPaddingMasks(this, compressedInputPaddingMasks, inputPaddingMasksPortName), _inputPaddingMaskSums(this, inputPaddingMaskSums, inputPaddingMaskSumsPortName), _filterWeights(this, compressedFilterWeights, filterWeightsPortName), _filterMeans(this, filterMeans, filterMeansPortName), _output(this, defaultOutputPortName, outputMemoryLayout), _convolutionalParameters(convolutionalParameters), _inputPaddingParameters(inputPaddingParameters), _inputMemoryLayout(inputMemoryLayout)
     {
     }
 
@@ -536,7 +488,7 @@ namespace nodes
         auto newInputPaddingMaskSums = transformer.TransformPortElements(_inputPaddingMaskSums.GetPortElements());
         auto newFilterWeights = transformer.TransformPortElements(_filterWeights.GetPortElements());
         auto newFilterMeans = transformer.TransformPortElements(_filterMeans.GetPortElements());
-        auto newNode = transformer.AddNode<BinaryXnorNode>(newInput, newInputPaddingMasks, newInputPaddingMaskSums, newFilterWeights, newFilterMeans, _convolutionalParameters, _inputPaddingParameters, _inputMemoryLayout, _outputMemoryLayout);
+        auto newNode = transformer.AddNode<BinaryXnorNode>(newInput, newInputPaddingMasks, newInputPaddingMaskSums, newFilterWeights, newFilterMeans, _convolutionalParameters, _inputPaddingParameters, _inputMemoryLayout, GetOutputMemoryLayout());
         transformer.MapNodeOutput(output, newNode->output);
     }
 
@@ -600,7 +552,7 @@ namespace nodes
         const auto& inputSize = inputLayout.GetActiveSize();
 
         const auto& outputLayout = this->GetOutputMemoryLayout();
-        // const auto& outputLayout = this->GetOutputMemoryLayout().Reorder({2,0,1}); // TODO: reorder from r,c,d -> d,r,c
+        // const auto& outputLayout = this->GetOutputMemoryLayout().ReorderedCopy({2,0,1}); // TODO: reorder from r,c,d -> d,r,c
         const auto& outputSize = outputLayout.GetActiveSize();
 
         // The workspace buffer element sizes are dependent on the processor architecture's bitness
@@ -701,7 +653,7 @@ namespace nodes
         const auto& inputSize = inputLayout.GetActiveSize();
 
         const auto& outputLayout = this->GetOutputMemoryLayout();
-        // const auto& outputLayout = this->GetOutputMemoryLayout().Reorder({2,0,1}); // TODO: reorder from r,c,d -> d,r,c
+        // const auto& outputLayout = this->GetOutputMemoryLayout().ReorderedCopy({2,0,1}); // TODO: reorder from r,c,d -> d,r,c
         const auto& outputSize = outputLayout.GetActiveSize();
 
         // The workspace buffer element sizes are dependent on the processor architecture's bitness
@@ -750,10 +702,8 @@ namespace nodes
             auto blockStartVal = &(*arguments++);
             auto blockEndVal = &(*arguments++);
 
-            auto filterLoop = taskFunction.ForLoop();
-            filterLoop.Begin(blockStartVal, blockEndVal, taskFunction.Literal<int>(1));
-            {
-                auto filterIndex = filterLoop.LoadIterationVariable();
+            taskFunction.For(blockStartVal, blockEndVal, taskFunction.Literal<int>(1), [pInput, pFilterWeights, pFilterMeans, pInputPaddingMask, pInputPaddingMaskSums, 
+                                                                                        pOutput, hasZeroPadding, outputColumns, packedRowSize, packedRowStride, useVectorInstructions, vectorSize, numVectorBlocks, &compiler, this](emitters::IRFunctionEmitter& taskFunction, llvm::Value* filterIndex) {
                 ComputeFilterOutput(compiler,
                                     taskFunction,
                                     pInput,
@@ -770,8 +720,7 @@ namespace nodes
                                     useVectorInstructions,
                                     vectorSize,
                                     numVectorBlocks);
-            }
-            filterLoop.End();
+            });
 
             taskFunction.Return();
         }

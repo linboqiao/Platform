@@ -8,6 +8,10 @@
 
 #include "Exception.h"
 
+// utilities
+#include "StringUtil.h"
+#include "TypeName.h"
+
 // stl
 #include <cassert>
 
@@ -92,7 +96,12 @@ namespace data
         }
 
         ElementType storedValue = static_cast<ElementType>(value);
-        assert(storedValue - value <= 1.0e-5 && value - storedValue <= 1.0e-5);
+
+        if (storedValue - value > 1.0e-5 || value - storedValue > 1.0e-5)
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, 
+                utilities::FormatString("Data loss detected when storing value %f as type %s", value, utilities::GetTypeName<ElementType>().c_str()));
+        }
 
         if (index < _data.size())
         {

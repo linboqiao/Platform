@@ -20,16 +20,36 @@ namespace model
         constexpr utilities::ArchiveVersion currentArchiveVersion = {utilities::ArchiveVersionNumbers::v2};
     }
 
-    InputNodeBase::InputNodeBase(OutputPortBase& output, math::TensorShape shape)
-        : CompilableNode({}, { &output }), _outputBase(output), _shape(shape)
+    InputNodeBase::InputNodeBase(OutputPortBase& output)
+        : CompilableNode({}, { &output }), _outputBase(output)
     {
     }
 
-    InputNodeBase::InputNodeBase(InputPortBase& input, OutputPortBase& output, math::TensorShape shape)
-        : CompilableNode({ &input }, { &output }), _outputBase(output), _shape(shape)
+    InputNodeBase::InputNodeBase(InputPortBase& input, OutputPortBase& output)
+        : CompilableNode({ &input }, { &output }), _outputBase(output)
     {
     }
 
+    MemoryShape InputNodeBase::GetShape() const
+    {
+        return _outputBase.GetMemoryLayout().GetActiveSize();
+    }
+
+    void InputNodeBase::SetShape(const MemoryShape& shape)
+    {
+        _outputBase.SetMemoryLayout({shape});
+    }
+
+    PortMemoryLayout InputNodeBase::GetMemoryLayout() const
+    {
+        return _outputBase.GetMemoryLayout();
+    }
+
+    void InputNodeBase::SetMemoryLayout(const PortMemoryLayout& layout)
+    {
+        _outputBase.SetMemoryLayout(layout);
+    }
+    
     ell::utilities::ArchiveVersion InputNodeBase::GetArchiveVersion() const
     {
         return std::max(currentArchiveVersion, CompilableNode::GetArchiveVersion());

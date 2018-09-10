@@ -21,6 +21,8 @@ set Vs14Path=
 set Vs15Path=
 set NOPYTHON=
 set STRICT=
+set TEST_MODEL_REPO=%GIT_REPO%
+if "%TEST_MODEL_REPO%"=="" set TEST_MODEL_REPO=https://github.com/Microsoft/ell-test-models
 :parse
 if "%1" == "" goto :step2
 if "%1"=="14" set UseVs14=1
@@ -32,6 +34,9 @@ shift
 goto :parse
 
 :step2
+if EXIST %TEMP%\ELL_BUILD_VS14 set UseVs14=1
+if EXIST %TEMP%\ELL_BUILD_VS15 set UseVs15=1
+
 set installationPath=
 set InstallationVersion=
 for /f "usebackq tokens=1* delims=: " %%i in (`external\vswhere.2.1.3\tools\vswhere.exe -legacy`) do (
@@ -55,22 +60,24 @@ set CMakeGenerator=Visual Studio 14 2015 Win64
 
 if "!UseVs14! and !UseVs15! and !Vs14Path!" == "0 and 0 and " (
     set UseVs15=1
-) 
+)
+
+if "!UseVs14! and !UseVs15! and !Vs14! and !Vs15!" == "0 and 0 and 1 and 1" (
+    set /p id="Use VS 2017 ? "
+    if /i "!id!"=="y" set UseVs15=1
+    if /i "!id!"=="yes" set UseVs15=1
+)
 
 if "!UseVs15!" == "1" (
     set CMakeGenerator=Visual Studio 15 2017 Win64
     REM put the VS 2017 version of cmake ahead of the list so we use it.
     set PATH=!Vs15Path!\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;!PATH!
     if "%VisualStudioVersion%"=="" call "!Vs15Path!\Common7\Tools\VsDevCmd.bat"
+    echo %CMakeGenerator%> %TEMP%\ELL_BUILD_VS15
 )
 if "!UseVs14!" == "1" (
     if "%VisualStudioVersion%"=="" call "!Vs14Path!\Common7\Tools\VsDevCmd.bat"
-)
-
-if "!UseVs14! and !UseVs15! and !Vs14! and !Vs15!" == "0 and 0 and 1 and 1" (
-    set /p id="Use VS 2017 ? "
-    if /i "!id!"=="y" set CMakeGenerator=Visual Studio 15 2017 Win64
-    if /i "!id!"=="yes" set CMakeGenerator=Visual Studio 15 2017 Win64
+    echo %CMakeGenerator%> %TEMP%\ELL_BUILD_VS14
 )
 
 if "!DEBUG!"=="1" set
@@ -86,7 +93,7 @@ if ERRORLEVEL 1 goto :nodelete
 if "!DEBUG!"=="1" dir "%VCToolsInstallDir%\bin\Hostx86\x86\"
 cd build
 echo cmake -G "!CMakeGenerator!" "!STRICT!" "!NOPYTHON!" ..
-cmake -G "!CMakeGenerator!" "!STRICT!" "!NOPYTHON!" ..
+cmake -G "!CMakeGenerator!" "!STRICT!" "!NOPYTHON!" "-DGIT_REPO=%TEST_MODEL_REPO"  ..
 if ERRORLEVEL 1 goto :cmakerror
 goto :buildit
 
@@ -94,7 +101,7 @@ goto :buildit
 REM try specifying the compiler
 set CPATH=%VCToolsInstallDir:\=/%
 echo %CPATH%
-cmake -G "!CMakeGenerator!" "!STRICT!" "-DCMAKE_C_COMPILER=%CPATH%bin/Hostx86/x86/cl.exe" "-DCMAKE_CXX_COMPILER=%CPATH%bin/Hostx86/x86/cl.exe" ..
+cmake -G "!CMakeGenerator!" "!STRICT!" "-DGIT_REPO=%TEST_MODEL_REPO" "-DCMAKE_C_COMPILER=%CPATH%bin/Hostx86/x86/cl.exe" "-DCMAKE_CXX_COMPILER=%CPATH%bin/Hostx86/x86/cl.exe" ..
 if ERRORLEVEL 1 goto :nocmake
 
 :buildit

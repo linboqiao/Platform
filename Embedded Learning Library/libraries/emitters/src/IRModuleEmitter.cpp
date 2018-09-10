@@ -6,13 +6,13 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "IRModuleEmitter.h"
 #include "EmitterException.h"
 #include "IRAssemblyWriter.h"
 #include "IRDiagnosticHandler.h"
 #include "IRHeaderWriter.h"
 #include "IRLoader.h"
 #include "IRMetadata.h"
+#include "IRModuleEmitter.h"
 #include "IRSwigInterfaceWriter.h"
 
 // utilities
@@ -20,14 +20,18 @@
 #include "Logger.h"
 
 // llvm
+#include <llvm/ADT/Triple.h>
 #include <llvm/AsmParser/Parser.h>
 #include <llvm/Bitcode/ReaderWriter.h>
 #include <llvm/IR/TypeBuilder.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Host.h>
+#include <llvm/Support/TargetRegistry.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/ToolOutputFile.h>
 #include <llvm/Support/raw_os_ostream.h>
+#include <llvm/Target/TargetMachine.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 
 namespace ell
@@ -37,16 +41,42 @@ namespace emitters
     using namespace utilities::logging;
     using utilities::logging::Log;
 
-    //
-    // Public methods
-    //
+
+    namespace
+    {
+        static const size_t c_defaultNumBits = 64;
+
+        // Triples
+        std::string c_macTriple = "x86_64-apple-macosx10.12.0"; // alternate: "x86_64-apple-darwin16.0.0"
+        std::string c_linuxTriple = "x86_64-pc-linux-gnu";
+        std::string c_windowsTriple = "x86_64-pc-win32";
+        std::string c_armv6Triple = "armv6--linux-gnueabihf"; // raspberry pi 0
+        std::string c_armv7Triple = "armv7--linux-gnueabihf"; // raspberry pi 3 and orangepi0
+        std::string c_arm64Triple = "aarch64-unknown-linux-gnu"; // DragonBoard
+        std::string c_iosTriple = "aarch64-apple-ios"; // alternates: "arm64-apple-ios7.0.0", "thumbv7-apple-ios7.0"
+
+        // CPUs
+        std::string c_pi0Cpu = "arm1136jf-s";
+        std::string c_pi3Cpu = "cortex-a53";
+        std::string c_orangePi0Cpu = "cortex-a7";
+
+        // clang settings:
+        // target=armv7-apple-darwin
+
+        std::string c_macDataLayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128";
+        std::string c_linuxDataLayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
+        std::string c_windowsDataLayout = "e-m:w-i64:64-f80:128-n8:16:32:64-S128";
+        std::string c_armDataLayout = "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64";
+        std::string c_arm64DataLayout = "e-m:e-i64:64-i128:128-n32:64-S128"; // DragonBoard
+        std::string c_iosDataLayout = "e-m:o-i64:64-i128:128-n32:64-S128";
+    }
 
     //
     // Constructors
     //
 
     IRModuleEmitter::IRModuleEmitter(const std::string& moduleName, const CompilerOptions& parameters)
-        : _llvmContext(new llvm::LLVMContext()), _emitter(*_llvmContext), _runtime(*this), _threadPool(*this)
+        : _llvmContext(new llvm::LLVMContext()), _emitter(*_llvmContext), _runtime(*this), _threadPool(*this), _profiler(*this, parameters.profile)
     {
         InitializeLLVM();
         InitializeGlobalPassRegistry();
@@ -58,16 +88,156 @@ namespace emitters
         {
             DeclarePrintf();
         }
+
+        _profiler.Init();
     }
 
     void IRModuleEmitter::SetCompilerOptions(const CompilerOptions& parameters)
     {
         // Call base class implementation
-        ModuleEmitter::SetCompilerOptions(parameters);
+        auto params = parameters;
+        CompleteCompilerOptions(params);
+        ModuleEmitter::SetCompilerOptions(params);
 
         // Set IR-specific parameters
-        SetTargetTriple(GetCompilerOptions().targetDevice.triple);
-        SetTargetDataLayout(GetCompilerOptions().targetDevice.dataLayout);
+        const auto& targetDevice = GetCompilerOptions().targetDevice;
+        SetTargetTriple(targetDevice.triple);
+        llvm::DataLayout dataLayout(GetCompilerOptions().targetDevice.dataLayout);
+        GetLLVMModule()->setDataLayout(dataLayout);
+    }
+
+    void IRModuleEmitter::CompleteCompilerOptions(CompilerOptions& parameters)
+    {
+        if (parameters.targetDevice.numBits == 0)
+        {
+            parameters.targetDevice.numBits = c_defaultNumBits;
+        }
+
+        // Set low-level args based on target name (if present)
+        if (parameters.targetDevice.deviceName != "")
+        {
+            if (parameters.targetDevice.deviceName == "host")
+            {
+                auto hostTripleString = llvm::sys::getProcessTriple();
+                llvm::Triple hostTriple(hostTripleString);
+
+                parameters.targetDevice.triple = hostTriple.normalize();
+                parameters.targetDevice.architecture = llvm::Triple::getArchTypeName(hostTriple.getArch());
+                parameters.targetDevice.cpu = llvm::sys::getHostCPUName();
+
+                std::string error;
+                const llvm::Target* target = llvm::TargetRegistry::lookupTarget(parameters.targetDevice.triple, error);
+                if (target == nullptr)
+                {
+                    throw EmitterException(EmitterError::targetNotSupported, std::string("Couldn't create target ") + error);
+                }
+
+                const OutputRelocationModel relocModel = OutputRelocationModel::Static;
+                const llvm::CodeModel::Model codeModel = llvm::CodeModel::Default;
+                const llvm::TargetOptions options;
+                std::unique_ptr<llvm::TargetMachine> targetMachine(target->createTargetMachine(parameters.targetDevice.triple,
+                                                                                               parameters.targetDevice.cpu,
+                                                                                               parameters.targetDevice.features,
+                                                                                               options,
+                                                                                               relocModel,
+                                                                                               codeModel,
+                                                                                               llvm::CodeGenOpt::Level::Default));
+
+                if (!targetMachine)
+                {
+                    throw EmitterException(EmitterError::targetNotSupported, "Unable to allocate host target machine");
+                }
+
+                llvm::DataLayout dataLayout(targetMachine->createDataLayout());
+                parameters.targetDevice.dataLayout = dataLayout.getStringRepresentation();
+            }
+            else if (parameters.targetDevice.deviceName == "mac")
+            {
+                parameters.targetDevice.triple = c_macTriple;
+                parameters.targetDevice.dataLayout = c_macDataLayout;
+            }
+            else if (parameters.targetDevice.deviceName == "linux")
+            {
+                parameters.targetDevice.triple = c_linuxTriple;
+                parameters.targetDevice.dataLayout = c_linuxDataLayout;
+            }
+            else if (parameters.targetDevice.deviceName == "windows")
+            {
+                parameters.targetDevice.triple = c_windowsTriple;
+                parameters.targetDevice.dataLayout = c_windowsDataLayout;
+            }
+            else if (parameters.targetDevice.deviceName == "pi0")
+            {
+                parameters.targetDevice.triple = c_armv6Triple;
+                parameters.targetDevice.dataLayout = c_armDataLayout;
+                parameters.targetDevice.numBits = 32;
+                parameters.targetDevice.cpu = c_pi0Cpu; // maybe not necessary
+            }
+            else if (parameters.targetDevice.deviceName == "pi3") // pi3 (Raspbian)
+            {
+                parameters.targetDevice.triple = c_armv7Triple;
+                parameters.targetDevice.dataLayout = c_armDataLayout;
+                parameters.targetDevice.numBits = 32;
+                parameters.targetDevice.cpu = c_pi3Cpu; // maybe not necessary
+            }
+            else if (parameters.targetDevice.deviceName == "orangepi0") // orangepi (Raspbian)
+            {
+                parameters.targetDevice.triple = c_armv7Triple;
+                parameters.targetDevice.dataLayout = c_armDataLayout;
+                parameters.targetDevice.numBits = 32;
+                parameters.targetDevice.cpu = c_orangePi0Cpu; // maybe not necessary
+            }
+            else if (parameters.targetDevice.deviceName == "pi3_64") // pi3 (openSUSE)
+            {
+                // need to set arch to aarch64?
+                parameters.targetDevice.triple = c_arm64Triple;
+                parameters.targetDevice.dataLayout = c_arm64DataLayout;
+                parameters.targetDevice.numBits = 64;
+                parameters.targetDevice.cpu = c_pi3Cpu;
+            }
+            else if (parameters.targetDevice.deviceName == "aarch64") // arm64 linux (DragonBoard)
+            {
+                // need to set arch to aarch64?
+                parameters.targetDevice.triple = c_arm64Triple;
+                parameters.targetDevice.dataLayout = c_arm64DataLayout;
+                parameters.targetDevice.numBits = 64;
+            }
+            else if (parameters.targetDevice.deviceName == "ios")
+            {
+                parameters.targetDevice.triple = c_iosTriple;
+                parameters.targetDevice.dataLayout = c_iosDataLayout;
+            }
+            else if (parameters.targetDevice.deviceName == "custom")
+            {
+                // perhaps it is a custom target where triple and cpu were set manually.
+                if (parameters.targetDevice.triple == "")
+                {
+                    throw EmitterException(EmitterError::badFunctionArguments, "Missing 'triple' information");
+                }
+                if (parameters.targetDevice.cpu == "")
+                {
+                    throw EmitterException(EmitterError::badFunctionArguments, "Missing 'cpu' information");
+                }
+            }
+            else
+            {
+                throw EmitterException(EmitterError::targetNotSupported, std::string("Unknown target device name: " + parameters.targetDevice.deviceName));
+            }
+        }
+        else
+        {
+            if (parameters.targetDevice.cpu == "cortex-m0")
+            {
+                parameters.targetDevice.triple = "armv6m-unknown-none-eabi";
+                parameters.targetDevice.features = "+armv6-m,+v6m";
+                parameters.targetDevice.architecture = "thumb";
+            }
+            else if (parameters.targetDevice.cpu == "cortex-m4")
+            {
+                parameters.targetDevice.triple = "arm-none-eabi";
+                parameters.targetDevice.features = "+armv7e-m,+v7,soft-float";
+            }
+        }
     }
 
     //
@@ -76,7 +246,36 @@ namespace emitters
 
     void IRModuleEmitter::BeginMapPredictFunction(const std::string& functionName, NamedVariableTypeList& args)
     {
-        BeginFunction(functionName, VariableType::Void, args);
+        IRFunctionEmitter& function = BeginFunction(functionName, VariableType::Void, args);
+
+        // store context variable so the callbacks can find it later.
+        auto context = function.GetFunctionArgument("context");
+        auto globalContext = GlobalPointer(GetModuleName() + "_context", emitters::VariableType::Byte);
+        function.Store(globalContext, context);
+    }
+
+    void IRModuleEmitter::EndMapPredictFunction()
+    {
+        EndFunction();
+
+        // now generate the public reset function that combines all the node level reset functions.
+        IRFunctionEmitter& resetFunction = BeginFunction(GetModuleName() + "_Reset", VariableType::Void);
+        resetFunction.IncludeInHeader();
+        for (auto name : _resetFunctions)
+        {
+            resetFunction.Call(name);
+        }
+        EndFunction();
+    }
+
+    /// <summary> Begin a new function for resetting a given node. Each node that needs to implement
+    /// reset calls this and implements their own reset logic.  The IRModuleEmitter wraps all that
+    /// in a master model_Reset function which is exposed in the API. </summary>
+    IRFunctionEmitter& IRModuleEmitter::BeginResetFunction(const std::string& functionName)
+    {
+        IRFunctionEmitter& function = BeginFunction(functionName, VariableType::Void);
+        _resetFunctions.push_back(functionName);
+        return function;
     }
 
     IRFunctionEmitter& IRModuleEmitter::BeginFunction(const std::string& functionName, VariableType returnType)
@@ -171,7 +370,7 @@ namespace emitters
                 Log() << "Function " << currentFunction.GetFunctionName() << " already has a terminator" << EOL;
             }
             currentFunction.ConcatRegions();
-            currentFunction.CompleteFunction(GetCompilerOptions().optimize);
+            currentFunction.CompleteFunction();
         }
         _emitter.SetCurrentInsertPoint(previousPos);
 
@@ -372,6 +571,12 @@ namespace emitters
         return AddGlobal(name, pType, initializer, false);
     }
 
+    llvm::GlobalVariable* IRModuleEmitter::GlobalPointer(const std::string& name, VariableType type)
+    {
+        llvm::PointerType* pointerType = _emitter.Type(type)->getPointerTo();
+        return AddGlobal(name, pointerType, _emitter.NullPointer(pointerType), false);
+    }
+
     llvm::GlobalVariable* IRModuleEmitter::GlobalArray(VariableType type, const std::string& name, const size_t size)
     {
         llvm::ArrayType* pArrayType = _emitter.ArrayType(type, size);
@@ -522,7 +727,7 @@ namespace emitters
     llvm::StructType* IRModuleEmitter::GetOrCreateStruct(const std::string& name, const NamedVariableTypeList& fields)
     {
         NamedLLVMTypeList llvmFields;
-        for(auto& field: fields)
+        for (auto& field : fields)
         {
             llvmFields.emplace_back(field.first, _emitter.Type(field.second));
         }
@@ -551,15 +756,15 @@ namespace emitters
         {
             // Check that existing struct fields match the ones we're trying to create
             auto structFields = structType->elements();
-            if(structFields.size() != fields.size())
+            if (structFields.size() != fields.size())
             {
                 throw EmitterException(EmitterError::badStructDefinition, "Fields don't match existing struct of same name");
             }
             else
             {
-                for(size_t fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex)
+                for (size_t fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex)
                 {
-                    if(fields[fieldIndex] != structFields[fieldIndex])
+                    if (fields[fieldIndex] != structFields[fieldIndex])
                     {
                         throw EmitterException(EmitterError::badStructDefinition, "Fields don't match existing struct of same name");
                     }
@@ -588,48 +793,58 @@ namespace emitters
     void IRModuleEmitter::WriteToFile(const std::string& filePath, ModuleOutputFormat format)
     {
         MachineCodeOutputOptions options;
-        auto CompilerOptions = GetCompilerOptions();
-        options.targetDevice = CompilerOptions.targetDevice;
-        if (CompilerOptions.optimize)
+        auto compilerOptions = GetCompilerOptions();
+        options.targetDevice = compilerOptions.targetDevice;
+        if (compilerOptions.optimize)
         {
             options.optimizationLevel = OptimizationLevel::Aggressive;
         }
+
+        options.verifyModule = true;
+        options.floatFusionMode = compilerOptions.useFastMath ? FloatFusionMode::Fast : FloatFusionMode::Standard;
+        if (compilerOptions.positionIndependentCode.HasValue())
+        {
+            options.relocModel = compilerOptions.positionIndependentCode.GetValue() ? OutputRelocationModel::PIC_ : OutputRelocationModel::Static;
+        }
+        else
+        {
+            // 'auto'
+            options.relocModel = compilerOptions.targetDevice.IsWindows() ? OutputRelocationModel::Static : OutputRelocationModel::PIC_;
+        }
+
         // Other params to possibly set:
-        //   bool verboseOutput = false;
-        //   bool verifyModule = false;
         //   FloatABIType floatABI = FloatABIType::Default;
-        //   FloatFusionMode floatFusionMode = FloatFusionMode::Standard;
 
         switch (format)
         {
-            case ModuleOutputFormat::assembly:
-            case ModuleOutputFormat::bitcode:
-            case ModuleOutputFormat::ir:
-            case ModuleOutputFormat::objectCode:
-            {
-                WriteToFile(filePath, format, options);
-                break;
-            }
-            case ModuleOutputFormat::cHeader:
-            {
-                auto os = utilities::OpenOfstream(filePath);
-                WriteToStream(os, format, options);
-                break;
-            }
-            case ModuleOutputFormat::swigInterface:
-            {
-                // Write the swig interface file
-                auto headerFilePath = filePath + ".h";
-                auto os = utilities::OpenOfstream(filePath);
-                WriteModuleSwigInterface(os, *this, utilities::GetFileName(headerFilePath));
+        case ModuleOutputFormat::assembly:
+        case ModuleOutputFormat::bitcode:
+        case ModuleOutputFormat::ir:
+        case ModuleOutputFormat::objectCode:
+        {
+            WriteToFile(filePath, format, options);
+            break;
+        }
+        case ModuleOutputFormat::cHeader:
+        {
+            auto os = utilities::OpenOfstream(filePath);
+            WriteToStream(os, format, options);
+            break;
+        }
+        case ModuleOutputFormat::swigInterface:
+        {
+            // Write the swig interface file
+            auto headerFilePath = filePath + ".h";
+            auto os = utilities::OpenOfstream(filePath);
+            WriteModuleSwigInterface(os, *this, utilities::GetFileName(headerFilePath));
 
-                // Write the swig header file
-                auto osHeader = utilities::OpenOfstream(headerFilePath);
-                WriteModuleSwigHeader(osHeader, *this);
-                break;
-            }
-            default:
-                throw new EmitterException(EmitterError::notSupported);
+            // Write the swig header file
+            auto osHeader = utilities::OpenOfstream(headerFilePath);
+            WriteModuleSwigHeader(osHeader, *this);
+            break;
+        }
+        default:
+            throw EmitterException(EmitterError::notSupported);
         }
     }
 
@@ -655,9 +870,9 @@ namespace emitters
     void IRModuleEmitter::WriteToStream(std::ostream& stream, ModuleOutputFormat format)
     {
         MachineCodeOutputOptions options;
-        auto CompilerOptions = GetCompilerOptions();
-        options.targetDevice = CompilerOptions.targetDevice;
-        if (CompilerOptions.optimize)
+        auto compilerOptions = GetCompilerOptions();
+        options.targetDevice = compilerOptions.targetDevice;
+        if (compilerOptions.optimize)
         {
             options.optimizationLevel = OptimizationLevel::Aggressive;
         }
@@ -678,7 +893,7 @@ namespace emitters
         }
         else if (ModuleOutputFormat::swigInterface == format)
         {
-            throw new EmitterException(EmitterError::notSupported, "swig only supports WriteToFile");
+            throw EmitterException(EmitterError::notSupported, "swig only supports WriteToFile");
         }
         else
         {
@@ -706,29 +921,7 @@ namespace emitters
             options.targetDevice.features = params.targetDevice.features;
         }
 
-        // optimization level
-        if (ModuleOutputFormat::bitcode == format)
-        {
-            llvm::WriteBitcodeToFile(GetLLVMModule(), os);
-        }
-        else if (ModuleOutputFormat::ir == format)
-        {
-            GetLLVMModule()->print(os, nullptr);
-        }
-        else if (ModuleOutputFormat::assembly == format)
-        {
-            // TODO: fuse or replace options with compiler options
-            GenerateMachineCode(os, *this, OutputFileType::CGFT_AssemblyFile, options);
-        }
-        else if (ModuleOutputFormat::objectCode == format)
-        {
-            // TODO: fuse or replace options with compiler options
-            GenerateMachineCode(os, *this, OutputFileType::CGFT_ObjectFile, options);
-        }
-        else
-        {
-            throw new EmitterException(EmitterError::notSupported);
-        }
+        GenerateMachineCode(os, *this, format, options);
     }
 
     void IRModuleEmitter::LoadIR(const std::string& text)
@@ -753,26 +946,18 @@ namespace emitters
     // Optimization
     //
 
-    void IRModuleEmitter::Optimize()
+    void IRModuleEmitter::Optimize(IROptimizer& optimizer)
     {
-        IRModuleOptimizer optimizer;
-        optimizer.AddStandardPasses();
-        Optimize(optimizer);
-    }
-
-    void IRModuleEmitter::Optimize(IRModuleOptimizer& optimizer)
-    {
-        optimizer.Run(GetLLVMModule());
-    }
-
-    //
-    // Code execution
-    //
-
-    void IRModuleEmitter::SetTargetMachine(llvm::TargetMachine* pMachine)
-    {
-        assert(pMachine != nullptr);
-        GetLLVMModule()->setDataLayout(pMachine->createDataLayout());
+        auto compilerOptions = GetCompilerOptions();
+        if (compilerOptions.optimize)
+        {
+            auto module = GetLLVMModule();
+            for (auto& function : *module)
+            {
+                optimizer.OptimizeFunction(&function);
+            }
+            optimizer.OptimizeModule(module);
+        }
     }
 
     //
@@ -817,15 +1002,45 @@ namespace emitters
         return llvm::verifyModule(*_pModule, &out);
     }
 
-
     void IRModuleEmitter::DebugDump()
     {
-        GetLLVMModule()->dump();
+        auto module = GetLLVMModule();
+        if (module)
+        {
+            module->dump();
+        }
+        else
+        {
+            throw EmitterException(EmitterError::unexpected, "Cannot dump module because TransferOwnership has been called.");
+        }
     }
 
     //
     // low-level LLVM-related functionality
     //
+
+    llvm::TargetMachine* IRModuleEmitter::GetTargetMachine()
+    {
+        std::string error;
+        auto parameters = GetCompilerOptions();
+
+        const llvm::Target* target = llvm::TargetRegistry::lookupTarget(parameters.targetDevice.triple, error);
+        if (target == nullptr)
+        {
+            return nullptr;
+        }
+
+        auto relocModel = parameters.targetDevice.IsWindows() ? OutputRelocationModel::Static : OutputRelocationModel::PIC_;
+        const llvm::TargetOptions options;
+        const llvm::CodeModel::Model codeModel = llvm::CodeModel::Default;
+        return target->createTargetMachine(parameters.targetDevice.triple,
+                                           parameters.targetDevice.cpu,
+                                           parameters.targetDevice.features,
+                                           options,
+                                           relocModel,
+                                           codeModel,
+                                           llvm::CodeGenOpt::Level::Default);
+    }
 
     std::unique_ptr<llvm::Module> IRModuleEmitter::TransferOwnership()
     {
@@ -842,11 +1057,6 @@ namespace emitters
     const llvm::DataLayout& IRModuleEmitter::GetTargetDataLayout() const
     {
         return GetLLVMModule()->getDataLayout();
-    }
-
-    void IRModuleEmitter::SetTargetDataLayout(const std::string& dataLayout)
-    {
-        GetLLVMModule()->setDataLayout(llvm::DataLayout(dataLayout));
     }
 
     void IRModuleEmitter::AddPreprocessorDefinition(const std::string& name, const std::string& value)
@@ -912,21 +1122,21 @@ namespace emitters
     {
         switch (scope)
         {
-            case VariableScope::literal:
-                return _literals.Get(name);
+        case VariableScope::literal:
+            return _literals.Get(name);
 
-            case VariableScope::global:
-                return _globals.Get(name);
+        case VariableScope::global:
+            return _globals.Get(name);
 
-            case VariableScope::local:
-                return GetCurrentFunction().GetEmittedVariable(scope, name);
+        case VariableScope::local:
+            return GetCurrentFunction().GetEmittedVariable(scope, name);
 
-            case VariableScope::input:
-            case VariableScope::output:
-                return GetCurrentFunction().GetEmittedVariable(scope, name);
+        case VariableScope::input:
+        case VariableScope::output:
+            return GetCurrentFunction().GetEmittedVariable(scope, name);
 
-            default:
-                throw EmitterException(EmitterError::variableScopeNotSupported);
+        default:
+            throw EmitterException(EmitterError::variableScopeNotSupported);
         }
     }
 
@@ -935,18 +1145,18 @@ namespace emitters
         assert(var.HasEmittedName());
         switch (var.Type())
         {
-            case VariableType::Byte:
-                return EmitVariable<uint8_t>(var);
-            case VariableType::Int32:
-                return EmitVariable<int>(var);
-            case VariableType::Int64:
-                return EmitVariable<int64_t>(var);
-            case VariableType::Float:
-                return EmitVariable<float>(var);
-            case VariableType::Double:
-                return EmitVariable<double>(var);
-            default:
-                break;
+        case VariableType::Byte:
+            return EmitVariable<uint8_t>(var);
+        case VariableType::Int32:
+            return EmitVariable<int>(var);
+        case VariableType::Int64:
+            return EmitVariable<int64_t>(var);
+        case VariableType::Float:
+            return EmitVariable<float>(var);
+        case VariableType::Double:
+            return EmitVariable<double>(var);
+        default:
+            break;
         }
         throw EmitterException(EmitterError::variableTypeNotSupported);
     }
@@ -1015,8 +1225,7 @@ namespace emitters
     {
         CompilerOptions parameters;
         parameters.targetDevice.deviceName = "host";
-        return {moduleName, parameters};
+        return { moduleName, parameters };
     }
-
 }
 }

@@ -29,7 +29,7 @@ namespace nodes
         // Functions
         //
 
-        // Note: this function is inline to supress a compiler warning about it being unneeded
+        // Note: this function is inline to suppress a compiler warning about it being unneeded
         inline llvm::Value* GetValueFromVolume(emitters::IRFunctionEmitter& function,
                                         llvm::Value* inputVolume,
                                         const model::PortMemoryLayout& inputLayout,
@@ -68,9 +68,9 @@ namespace nodes
             const int inputDepth = inputLayout.GetActiveSize(2);
             const int inputPadding = inputLayout.GetOffset(0); // a proxy for the padding
 
-            const int extraPadding = convPadding - inputPadding; // amount by which the convolution's desired padding exceeds input's
-            // auto extraPadding = function.LocalScalar(extraPaddingVal);
-            if (extraPadding > 0) // known at compile-time
+            const int extraPaddingVal = convPadding - inputPadding; // amount by which the convolution's desired padding exceeds input's
+            auto extraPadding = function.LocalScalar(extraPaddingVal);
+            if (extraPaddingVal > 0) // known at compile-time
             {
                 auto valueRow = inputRow - extraPadding;
                 auto valueColumn = inputColumn - extraPadding;
@@ -97,7 +97,7 @@ namespace nodes
                 return function.Load(returnValue);
             }
 
-            if (extraPadding != 0) // negative
+            if (extraPaddingVal != 0) // negative
             {
                 inputRow = inputRow + extraPadding;
                 inputColumn = inputColumn + extraPadding;
@@ -118,10 +118,11 @@ namespace nodes
                                          llvm::Value* outputMatrix)
         {
             // Model parameters
-            const auto inputHeight = inputLayout.GetActiveSize(0);
-            const auto inputWidth = inputLayout.GetActiveSize(1);
-            const auto inputDepth = inputLayout.GetActiveSize(2);
+            const auto inputHeight = inputLayout.GetLogicalDimensionActiveSize(0);
+            const auto inputWidth = inputLayout.GetLogicalDimensionActiveSize(1);
+            const auto inputDepth = inputLayout.GetLogicalDimensionActiveSize(2);
             const auto fieldVolumeSize = filterWidth * filterWidth * inputDepth;
+            const auto numOutputColumns = static_cast<int>(outputWidth * outputHeight);
 
             // Input (I): d x h x w (planar)
             // Output (S): (d * k * k) x (outputHeight * outputWidth) ==  fieldVolumeSize x outputImageSize
@@ -175,7 +176,6 @@ namespace nodes
                 {
                     for (int fx = 0; fx < filterWidth; ++fx)
                     {
-	                const auto numOutputColumns = outputWidth * outputHeight;
                         // `outputRow` is the row of the output matrix to start writing to. Multiplied by `inputDepth`, because
                         // we're going to memcpy `inputDepth` rows at once
                         int outputRow = (fy * filterWidth + fx) * inputDepth;
@@ -202,9 +202,8 @@ namespace nodes
                         const int outputRowOffset = outputRow * numOutputColumns;
 
                         // Zero out the padding areas
-			// BUG: explicit capture-by-ref entries are here to work around a GCC bug
-                        function.For(inputDepth, [=, &fx, &fy, &extraPadding, &inputWidth, &inputHeight, &outputWidth, &outputHeight, &numOutputColumns](emitters::IRFunctionEmitter& function, llvm::Value* channelValue) {
-
+                        // BUG: explicit capture-by-ref entries are here to work around a GCC bug
+                        function.For(inputDepth, [=, &fx, &fy, &extraPadding, &inputWidth, &inputHeight, &outputWidth, &numOutputColumns](emitters::IRFunctionEmitter& function, llvm::Value* channelValue) {
                             auto channel = function.LocalScalar(channelValue);
                             auto outputDepthOffset = channel * numOutputColumns;
 
@@ -232,7 +231,7 @@ namespace nodes
                             {
                                 // zero out elements at beginning of each row
                                 int count = extraPadding - fx;
-			        // BUG: explicit capture-by-ref entries are here to work around a GCC bug
+                                // BUG: explicit capture-by-ref entries are here to work around a GCC bug
                                 function.For(inputHeight, [=, &inputWidth, &outputRowOffset](emitters::IRFunctionEmitter& function, llvm::Value* indexValue) {
                                     auto index = function.LocalScalar(indexValue);
                                     auto begin = index * inputWidth;
@@ -244,7 +243,7 @@ namespace nodes
                             {
                                 // zero out elements at end of each row
                                 int count = fx - extraPadding;
-			        // BUG: explicit capture-by-ref entries are here to work around a GCC bug
+                                // BUG: explicit capture-by-ref entries are here to work around a GCC bug
                                 function.For(inputHeight, [=, &inputWidth, &outputRowOffset](emitters::IRFunctionEmitter& function, llvm::Value* indexValue) {
                                     auto index = function.LocalScalar(indexValue);
                                     auto begin = ((index + 1) * inputWidth) - count;
@@ -320,8 +319,12 @@ namespace nodes
 
     template <typename ValueType>
     ReceptiveFieldMatrixNode<ValueType>::ReceptiveFieldMatrixNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& inputMemoryLayout, int filterWidth, int stride, int convolutionPadding, std::array<int, 3> dataOrder, int outputWidth, int outputHeight)
-        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, filterWidth * filterWidth * inputMemoryLayout.GetActiveSize(2) * outputWidth * outputHeight), _inputMemoryLayout(inputMemoryLayout), _filterWidth(filterWidth), _stride(stride), _convolutionPadding(convolutionPadding), _dataOrder(dataOrder), _outputWidth(outputWidth), _outputHeight(outputHeight)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, model::PortMemoryLayout(model::MemoryShape{ outputWidth * outputHeight, filterWidth * filterWidth * inputMemoryLayout.GetLogicalDimensionActiveSize(2)}, model::DimensionOrder{ dataOrder }) ), _inputMemoryLayout(inputMemoryLayout), _filterWidth(filterWidth), _stride(stride), _convolutionPadding(convolutionPadding), _dataOrder(dataOrder), _outputWidth(outputWidth), _outputHeight(outputHeight)
     {
+        if (inputMemoryLayout.NumDimensions() != 3)
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "ReceptiveFieldMatrixNode: inputMemoryLayout must have 3 dimensions");
+        }
     }
 
     template <typename ValueType>
@@ -381,7 +384,6 @@ namespace nodes
 
         archiver["filterWidth"] >> _filterWidth;
         archiver["stride"] >> _stride;
-        ;
         archiver["convolutionPadding"] >> _convolutionPadding;
 
         std::vector<int> dataOrder;

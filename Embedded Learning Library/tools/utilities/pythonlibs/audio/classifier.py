@@ -15,29 +15,27 @@ import numpy as np
 class AudioClassifier:
     """
     This class wraps an ELL audio classifier model and adds some nice features, like mapping the
-    predictions to a string label, adding an ignore_list which specifies any predictions that are
-    meaningless and it does some posterior smoothing on the predictions since audio model outputs 
+    predictions to a string label, any categorry starting with "_" will be ignored.  It also 
+    does some optional posterior smoothing on the predictions since audio model outputs 
     tend to be rather noisy. It also supports a threshold value so any prediction less than this
     probability is ignored.
     """
-    def __init__(self, model_path, categories_file, ignore_list=[], threshold=0, smoothing_delay=0.2):
+    def __init__(self, model_path, categories_file, threshold=0, smoothing_delay=0):
         """
         Initialize the new AudioClassifier.
         model - the path to the ELL model module to load.
         categories_file - the path to a text file containing strings labels for each prediction
-        ignore_list - a list of prediction indices to ignore
         threshold - threshold for predictions, (default 0).
-        smoothing_delay - controls the size of this window (defaults to 0.2 seconds).
+        smoothing_delay - controls the size of this window (defaults to 0).
         """
         self.smoothing_delay = smoothing_delay
-        self.ignore_list = ignore_list
-        if not self.ignore_list:
-            self.ignore_list = []
         self.threshold = threshold
         self.categories = None
+        self.ignore_list = []
         if categories_file:
             with open(categories_file, "r") as fp:
                 self.categories = [e.strip() for e in fp.readlines()]
+            self.ignore_list += [i for i in self.categories if i.startswith("_")]
 
         self.using_map = False
         if os.path.splitext(model_path)[1] == ".ell":
@@ -49,6 +47,10 @@ class AudioClassifier:
             self.model = ell.CompiledModel(model_path)
 
         self.logfile = None
+        ts = self.model.input_shape
+        self.input_shape = (ts.rows, ts.columns, ts.channels)
+        ts = self.model.output_shape
+        self.output_shape = (ts.rows, ts.columns, ts.channels)
         self.input_size = int(self.model.input_shape.Size())
         self.output_size = int(self.model.output_shape.Size())
         self.items = []
@@ -74,7 +76,8 @@ class AudioClassifier:
         if self.logfile:
             self.logfile.write("{}\n".format(",".join([str(x) for x in output])))
 
-        output = self._smooth(output)
+        if self.smoothing_delay:
+            output = self._smooth(output)
         
         prediction = self._get_prediction(output)
         if prediction and prediction not in self.ignore_list:
@@ -84,6 +87,9 @@ class AudioClassifier:
             return (prediction, output[prediction], label)
 
         return (None, None, None)
+
+    def reset(self):
+        self.model.reset()
 
     def _get_prediction(self, output):
         """ handles scalar and vector predictions """
@@ -112,13 +118,14 @@ class AudioClassifier:
         new_items = [x for x in self.items if x[0] + self.smoothing_delay >= now ]
         new_items += [ (now, predictions) ] # add our new item
         self.items = new_items
-        
+
         # compute summed probabilities over this new sliding window
         sum = np.sum([p[1] for p in new_items], axis=0)
         return sum / len(new_items)
 
 
     def avg_time(self):
+        """ get the average prediction time """
         if self.count == 0:
             self.count = 1
         return self.total_time /  self.count

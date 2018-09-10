@@ -9,6 +9,15 @@
 #include "IRLocalValue.h"
 #include "IRFunctionEmitter.h"
 
+// utilities
+#include "Exception.h"
+
+// LLVM
+#include <llvm/IR/Value.h>
+
+// stl
+#include <cassert>
+
 namespace ell
 {
 namespace emitters
@@ -27,6 +36,41 @@ namespace emitters
         }
     }
 
+    namespace detail
+    {
+        bool BothIntegral(const IRLocalValue& a, const IRLocalValue& b)
+        {
+            return (a.value->getType()->getScalarType()->isIntegerTy() && b.value->getType()->getScalarType()->isIntegerTy());
+        }
+
+        bool BothFloatingPoint(const IRLocalValue& a, const IRLocalValue& b)
+        {
+            return (a.value->getType()->getScalarType()->isFloatingPointTy() && b.value->getType()->getScalarType()->isFloatingPointTy());
+        }
+
+        void VerifyArgTypesCompatible(const IRLocalValue& a, const IRLocalValue& b)
+        {
+            VerifyFromSameFunction(a, b);
+            if (!(BothIntegral(a, b) || BothFloatingPoint(a, b)))
+            {
+                throw EmitterException(EmitterError::badFunctionArguments, "IRLocalValue arguments have incompatible types");
+            }
+        }
+
+        // `areCompatible` is a function that returns true if the arg types are compatible. It has the signature: bool(const IRLocalValue& a, const IRLocalValue& b)
+        using CompatibleTypesPredicate = std::function<bool(const IRLocalValue&, const IRLocalValue&)>;
+        void VerifyArgTypesCompatible(const IRLocalValue& a, const IRLocalValue& b, CompatibleTypesPredicate areCompatible)
+        {
+            VerifyFromSameFunction(a, b);
+            if (!(areCompatible(a, b)))
+            {
+                throw EmitterException(EmitterError::badFunctionArguments, "IRLocalValue arguments have incompatible types");
+            }
+        }
+    }
+
+    using namespace detail;
+
     //
     // IRLocalValue
     //
@@ -43,35 +87,6 @@ namespace emitters
     IRLocalValue& IRLocalValue::operator=(llvm::Value* value)
     {
         this->value = value;
-        return *this;
-    }
-
-    //
-    // IRLocalArrayValue
-    //
-    IRLocalArray::IRLocalArrayValue IRLocalArray::operator[](int offset) const
-    {
-        return IRLocalArrayValue(function, value, function.Literal(offset));
-    }
-
-    IRLocalArray::IRLocalArrayValue IRLocalArray::operator[](llvm::Value* offset) const
-    {
-        return IRLocalArrayValue(function, value, offset);
-    }
-
-    IRLocalArray::IRLocalArrayValue::IRLocalArrayValue(
-        emitters::IRFunctionEmitter& function, llvm::Value* value, llvm::Value* pOffset)
-        : _function(function), _pPointer(value), _pOffset(pOffset) {}
-
-    IRLocalArray::IRLocalArrayValue::operator IRLocalScalar() const
-    {
-        return _function.LocalScalar(_function.ValueAt(_pPointer, _pOffset));
-    }
-
-    IRLocalArray::IRLocalArrayValue& IRLocalArray::IRLocalArrayValue::operator=(llvm::Value* value)
-    {
-        _function.SetValueAt(_pPointer, _pOffset, value);
-
         return *this;
     }
 }

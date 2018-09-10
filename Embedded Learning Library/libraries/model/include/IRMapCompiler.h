@@ -56,7 +56,9 @@ namespace model
         /// <returns> The CompilerOptions struct used by the IR emitter to control code generation. </returns>
         const emitters::CompilerOptions& GetCompilerOptions() const { return GetModule().GetCompilerOptions(); }
 
+        /// <summary> Get the optimizer used by this compiler. </summary>
         ModelOptimizer& GetOptimizer() { return _optimizer; }
+
         //
         // Routines useful to Node implementers
         //
@@ -151,6 +153,13 @@ namespace model
         /// <returns> The namespace prefix for the emitted module. </returns>
         std::string GetNamespacePrefix() const;
 
+        /// <summary> Generates a unique global variable name for the given node and base name </summary>
+        ///
+        /// <param name="node"> The node that this global name belongs to. </param>
+        /// <param name="baseName"> The base name that should be included as part of the unique name. </param>
+        /// <returns> The generated name. </returns>
+        std::string GetGlobalName(const Node& node, const std::string& baseName) const;
+
     protected:
         void OnBeginCompileModel(const Model& model) override;
         void OnEndCompileModel(const Model& model) override;
@@ -182,7 +191,7 @@ namespace model
         void EmitShapeEnum();
         void EmitGetInputShapeFunction(const Map& map);
         void EmitGetOutputShapeFunction(const Map& map);
-        void EmitShapeConditionals(emitters::IRFunctionEmitter& fn, std::vector<InputShape> shapes);
+        void EmitShapeConditionals(emitters::IRFunctionEmitter& fn, std::vector<MemoryShape> shapes);
 
         // stack of node regions
         std::vector<NodeMap<emitters::IRBlockRegion*>> _nodeRegions;

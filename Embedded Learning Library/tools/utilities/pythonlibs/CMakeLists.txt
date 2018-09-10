@@ -8,10 +8,12 @@ if(${PYTHON_ENABLED})
 
     set(lib_src 
         buildtools.py 
+        cpuinfo.py 
         dependency_installer.py
         download_helper.py
         find_ell.py 
         logger.py
+        modelHelpers.py
         picluster.py
         procmon.py 
         remoterunner.py

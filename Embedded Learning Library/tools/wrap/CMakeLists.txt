@@ -5,11 +5,11 @@ include(CommonInterfaces)
 
 add_subdirectory(test)
 
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
-    set(OBJECT_EXTENSION obj)
+if(WIN32)
+    set(OBJECT_EXTENSION "o")
     set(ADDITIONAL_DISTUTILS_FLAGS "--plat-name=win-amd64 install")
 else()
-    set(OBJECT_EXTENSION o)
+    set(OBJECT_EXTENSION "o")
     set(ADDITIONAL_DISTUTILS_FLAGS install)
 endif()
 
@@ -44,4 +44,7 @@ endif()
 set(OUTPUT_DIR ${CMAKE_BINARY_DIR})
 
 set(JSON "{ \"llc\": \"${LLC_EXECUTABLE}\", \"swig\": \"${SWIG_EXECUTABLE}\", \"compile\": \"${GLOBAL_BIN_DIR}/compile\", \"blas\": \"${BLAS_LIBS}\", \"opt\": \"${OPT_EXECUTABLE}\" }")
-file(WRITE "${OUTPUT_DIR}/ell_build_tools.json" ${JSON})
+file(WRITE "${OUTPUT_DIR}/ell_build_tools.json" "${JSON}")
+
+file(TO_NATIVE_PATH "${BLAS_DLL_DIR}" OPENBLAS_DLL_DIR)
+file(WRITE "${OUTPUT_DIR}/openblas.cmd" "set PATH=%PATH%;${OPENBLAS_DLL_DIR}")

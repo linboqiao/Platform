@@ -33,7 +33,7 @@ namespace emitters
     using IRValueList = std::vector<llvm::Value*>;
 
     /// <summary> Symbol Table that maps symbol Names to emitted IR Value* </summary>
-    using IRVariableTable = SymbolTable<llvm::Value*>;
+    using IRValueTable = SymbolTable<llvm::Value*>;
 
     /// <summary> Symbol Table that maps type Names to emitted IR Type* </summary>
     using IRTypeTable = SymbolTable<llvm::Type*>;
@@ -85,6 +85,17 @@ namespace emitters
         llvm::ArrayType* ArrayType(VariableType type, size_t size);
 
         /// <summary>
+        /// Get the LLVM Type Information for a 2D array of VariableType, with the given number of rows and columns.
+        /// </summary>
+        ///
+        /// <param name="type"> The entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to an llvm::ArrayType object that represents the specified array. </returns>
+        llvm::ArrayType* ArrayType(VariableType type, size_t rows, size_t columns);
+
+        /// <summary>
         /// Get the LLVM Type Information for an ARRAY of VariableType, with a given size.
         /// </summary>
         ///
@@ -93,6 +104,17 @@ namespace emitters
         ///
         /// <returns> Pointer to an llvm::ArrayType object that represents the specified array. </returns>
         llvm::ArrayType* ArrayType(llvm::Type* type, size_t size);
+
+        /// <summary>
+        /// Get the LLVM Type Information for a 2D array of VariableType, with the given number of rows and columns.
+        /// </summary>
+        ///
+        /// <param name="type"> The entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to an llvm::ArrayType object that represents the specified array. </returns>
+        llvm::ArrayType* ArrayType(llvm::Type* type, size_t rows, size_t columns);
 
         /// <summary>
         /// Get the LLVM Type Information for a vector of a given size.
@@ -224,7 +246,7 @@ namespace emitters
         ///
         /// <param name="value"> The pointer value. </param>
         ///
-        /// <returns> Pointer to an llvm::Constant that represents an pointer. </returns>
+        /// <returns> Pointer to an llvm::Constant that represents a pointer. </returns>
         template <typename ValueType>
         llvm::Constant* Pointer(ValueType* ptr);
 
@@ -689,12 +711,12 @@ namespace emitters
         /// <returns> Pointer to a value that represents that entry in the array. </returns>
         llvm::Value* PointerOffset(llvm::Value* pArray, llvm::Value* pOffset, const std::string& name = "");
 
-        /// <summary> Emits a pointer to the global array. </summary>
+        /// <summary> Emits a dereference of a pointer to a global variable. </summary>
         ///
         /// <param name="pArray"> Pointer to the array. </param>
         ///
         /// <returns> Pointer to the first entry in the array. </returns>
-        llvm::Value* Pointer(llvm::GlobalVariable* pArray);
+        llvm::Value* DereferenceGlobalPointer(llvm::Value* pArray);
 
         /// <summary> Emit a pointer to an entry in an array. </summary>
         ///
@@ -799,6 +821,15 @@ namespace emitters
         /// <returns> Pointer to a llvm::AllocaInst that represents the allocated array. </returns>
         llvm::AllocaInst* StackAllocate(VariableType type, size_t size);
 
+        /// <summary> Emits a stack alloc instruction for a 2D array of primitive types. </summary>
+        ///
+        /// <param name="type"> The array entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to a llvm::AllocaInst that represents the allocated array. </returns>
+        llvm::AllocaInst* StackAllocate(VariableType type, size_t rows, size_t columns);
+
         /// <summary> Emits a stack alloc instruction for an array of primitive types. </summary>
         ///
         /// <param name="type"> The array entry type. </param>
@@ -806,6 +837,15 @@ namespace emitters
         ///
         /// <returns> Pointer to a llvm::AllocaInst that represents the allocated array. </returns>
         llvm::AllocaInst* StackAllocate(llvm::Type* type, size_t size);
+
+        /// <summary> Emits a stack alloc instruction for a 2D array of primitive types. </summary>
+        ///
+        /// <param name="type"> The array entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to a llvm::AllocaInst that represents the allocated array. </returns>
+        llvm::AllocaInst* StackAllocate(llvm::Type* type, size_t rows, size_t columns);
 
         /// <summary> Emit a conditional branch. </summary>
         ///
@@ -928,7 +968,7 @@ namespace emitters
 
         llvm::LLVMContext& _llvmContext; // LLVM global context
         llvm::IRBuilder<> _irBuilder; // IRBuilder API
-        IRVariableTable _stringLiterals; // String literals are emitted as constants. We have to track them ourselves to prevent dupes.
+        IRValueTable _stringLiterals; // String literals are emitted as constants. We have to track them ourselves to prevent dupes.
         llvm::Value* _pZeroLiteral = nullptr;
         std::unordered_map<std::string, llvm::StructType*> _structs;
     };

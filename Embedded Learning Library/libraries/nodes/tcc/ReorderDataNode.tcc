@@ -13,10 +13,58 @@
 
 // stl
 #include <vector>
+
 namespace ell
 {
 namespace nodes
 {
+    namespace ReorderDataNodeDetail
+    {
+        inline model::MemoryCoordinates LogicalToPhysical(const model::MemoryCoordinates& coordinates, const model::DimensionOrder& order)
+        {
+            const int numDimensions = coordinates.NumDimensions();
+            std::vector<int> result(numDimensions);
+            for(int index = 0; index < numDimensions; ++index)
+            {
+                result[index] = coordinates[order[index]];
+            }
+            return { result };
+        }
+
+        inline std::vector<emitters::IRLocalScalar> LogicalToPhysical(const std::vector<emitters::IRLocalScalar>& coordinates, const model::DimensionOrder& order)
+        {
+            const int numDimensions = order.NumDimensions();
+            std::vector<emitters::IRLocalScalar> result(numDimensions, coordinates[0]); // copying coordinates[0] just because IRLocalScalar doesn't have a default c'tor
+            for(int index = 0; index < numDimensions; ++index)
+            {
+                result[index] = coordinates[order[index]];
+            }
+            return result;
+        }
+
+        inline model::MemoryCoordinates PhysicalToLogical(const model::MemoryCoordinates& coordinates, const model::DimensionOrder& order)
+        {
+            const int numDimensions = coordinates.NumDimensions();
+            std::vector<int> result(numDimensions);
+            for(int index = 0; index < numDimensions; ++index)
+            {
+                result[order[index]] = coordinates[index];
+            }
+            return { result };
+        }
+
+        inline std::vector<emitters::IRLocalScalar> PhysicalToLogical(const std::vector<emitters::IRLocalScalar>& coordinates, const model::DimensionOrder& order)
+        {
+            const int numDimensions = order.NumDimensions();
+            std::vector<emitters::IRLocalScalar> result(numDimensions, coordinates[0]); // copying coordinates[0] just because IRLocalScalar doesn't have a default c'tor
+            for(int index = 0; index < numDimensions; ++index)
+            {
+                result[order[index]] = coordinates[index];
+            }
+            return result;
+        }
+    }
+
     //
     // ReorderDataNode
     //
@@ -26,150 +74,191 @@ namespace nodes
     {
     }
 
+    //
+    // Without reordering ("reshape" / slicing)
+    //
+    template <typename ValueType>
+    ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& outputMemoryLayout, ValueType paddingValue)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout), _paddingValue(paddingValue)
+    {
+        _inputMemoryLayout = _input.GetMemoryLayout();
+        assert(_inputMemoryLayout.NumDimensions() == outputMemoryLayout.NumDimensions());
+    }
+
     template <typename ValueType>
     ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& inputMemoryLayout, const model::PortMemoryLayout& outputMemoryLayout, ValueType paddingValue)
-        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout.GetMemorySize()), _inputMemoryLayout(inputMemoryLayout), _outputMemoryLayout(outputMemoryLayout), _outputDimensionOrder({}), _paddingValue(paddingValue)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout), _inputMemoryLayout(inputMemoryLayout), _paddingValue(paddingValue)
     {
-        assert(_inputMemoryLayout.NumDimensions() == _outputMemoryLayout.NumDimensions());
-        int numDimensions = _outputMemoryLayout.NumDimensions();
-        _outputDimensionOrder.resize(numDimensions);
-        for (int index = 0; index < numDimensions; ++index)
-        {
-            _outputDimensionOrder[index] = index;
-        }
+        assert(inputMemoryLayout.NumDimensions() == outputMemoryLayout.NumDimensions());
+    }
+
+    //
+    // With reordering ("reshape" / slicing, followed by transpose / dimension reordering)
+    //
+    template <typename ValueType>
+    ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::DimensionOrder& order)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, _input.GetMemoryLayout().ReorderedCopy(order))
+    {
+        _inputMemoryLayout = _input.GetMemoryLayout();
+        assert(_inputMemoryLayout.NumDimensions() == order.NumDimensions());
     }
 
     template <typename ValueType>
-    ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& inputMemoryLayout, const model::PortMemoryLayout& outputMemoryLayout, const std::vector<int>& order, ValueType paddingValue)
-        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout.GetMemorySize()), _inputMemoryLayout(inputMemoryLayout), _outputMemoryLayout(outputMemoryLayout), _outputDimensionOrder(order), _paddingValue(paddingValue)
+    ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& outputMemoryLayout, const model::DimensionOrder& order, ValueType paddingValue)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout.ReorderedCopy(order)), _paddingValue(paddingValue)
     {
-        assert(_inputMemoryLayout.NumDimensions() == _outputMemoryLayout.NumDimensions());
-        assert(_inputMemoryLayout.NumDimensions() == _outputDimensionOrder.size());
-    }
-
-    // Note: order {2, 0, 1} maps {row, column, channel} -> {channel, row, column}
-    // So, we want to map entry 0  of the input (row) -> entry 1 (row) of the output
-    template <typename ValueType>
-    model::Shape ReorderDataNode<ValueType>::ReorderInputToOutputLocation(model::Shape inputLocation) const
-    {
-        model::Shape result;
-        result.resize(inputLocation.size());
-        for (int index = 0; index < result.size(); ++index)
-        {
-            result[index] = inputLocation[_outputDimensionOrder[index]];
-        }
-        return result;
+        _inputMemoryLayout = _input.GetMemoryLayout();
+        assert(_inputMemoryLayout.NumDimensions() == outputMemoryLayout.NumDimensions());
     }
 
     template <typename ValueType>
-    std::vector<llvm::Value*> ReorderDataNode<ValueType>::ReorderInputToOutputLocation(std::vector<llvm::Value*> inputLocation) const
+    ReorderDataNode<ValueType>::ReorderDataNode(const model::PortElements<ValueType>& input, const model::PortMemoryLayout& inputMemoryLayout, const model::PortMemoryLayout& outputMemoryLayout, const model::DimensionOrder& order, ValueType paddingValue)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout.ReorderedCopy(order)), _inputMemoryLayout(inputMemoryLayout), _paddingValue(paddingValue)
     {
-        std::vector<llvm::Value*> result;
-        result.resize(inputLocation.size());
-        for (int index = 0; index < result.size(); ++index)
-        {
-            result[index] = inputLocation[_outputDimensionOrder[index]];
-        }
-        return result;
+        assert(inputMemoryLayout.NumDimensions() == outputMemoryLayout.NumDimensions());
     }
 
     // Note: order {2, 0, 1} maps {row, column, channel} -> {channel, row, column}
     // So, we want to map entry 0  of the output (channel) -> entry 2 (channel) of the intput
     template <typename ValueType>
-    model::Shape ReorderDataNode<ValueType>::ReorderOutputToInputLocation(model::Shape outputLocation) const
+    model::MemoryCoordinates ReorderDataNode<ValueType>::ReorderOutputToInputLocation(model::MemoryCoordinates physicalOutputCoordinates) const
     {
-        model::Shape result;
-        result.resize(outputLocation.size());
-        for (size_t index = 0; index < result.size(); ++index)
-        {
-            result[_outputDimensionOrder[index]] = outputLocation[index];
-        }
-        return result;
+        const auto inputDimensionOrder = GetInputMemoryLayout().GetLogicalDimensionOrder();
+        const auto outputDimensionOrder = GetOutputMemoryLayout().GetLogicalDimensionOrder();
+
+        auto logicalCoordinates = ReorderDataNodeDetail::PhysicalToLogical(physicalOutputCoordinates, outputDimensionOrder);
+        auto physicalInputCoordinates = ReorderDataNodeDetail::LogicalToPhysical(logicalCoordinates, inputDimensionOrder);
+        return physicalInputCoordinates;
     }
 
     template <typename ValueType>
-    std::vector<llvm::Value*> ReorderDataNode<ValueType>::ReorderOutputToInputLocation(std::vector<llvm::Value*> outputLocation) const
+    std::vector<emitters::IRLocalScalar> ReorderDataNode<ValueType>::ReorderOutputToInputLocation(std::vector<emitters::IRLocalScalar> physicalOutputCoordinates) const
     {
-        std::vector<llvm::Value*> result;
-        result.resize(outputLocation.size());
-        for (size_t index = 0; index < result.size(); ++index)
-        {
-            result[_outputDimensionOrder[index]] = outputLocation[index];
-        }
-        return result;
+        const auto inputDimensionOrder = GetInputMemoryLayout().GetLogicalDimensionOrder();
+        const auto outputDimensionOrder = GetOutputMemoryLayout().GetLogicalDimensionOrder();
+
+        auto logicalCoordinates = ReorderDataNodeDetail::PhysicalToLogical(physicalOutputCoordinates, outputDimensionOrder);
+        auto physicalInputCoordinates = ReorderDataNodeDetail::LogicalToPhysical(logicalCoordinates, inputDimensionOrder);
+        return physicalInputCoordinates;
     }
 
     template <typename ValueType>
     void ReorderDataNode<ValueType>::Copy(model::ModelTransformer& transformer) const
     {
         auto newPortElements = transformer.TransformPortElements(_input.GetPortElements());
-        auto newNode = transformer.AddNode<ReorderDataNode>(newPortElements, _inputMemoryLayout, _outputMemoryLayout, _outputDimensionOrder, _paddingValue);
+        auto newNode = transformer.AddNode<ReorderDataNode>(newPortElements, _inputMemoryLayout, _output.GetMemoryLayout(), _paddingValue);
         transformer.MapNodeOutput(this->output, newNode->output);
+    }
+
+    template <typename ValueType>
+    void ReorderDataNode<ValueType>::ComputeDimensionLoop(const model::PortMemoryLayout& inputMemoryLayout, const model::PortMemoryLayout& outputMemoryLayout, int dimension, std::vector<int>& coordinates, std::vector<ValueType>& output) const
+    {
+        if (dimension == inputMemoryLayout.NumDimensions() - 1) // last dimension
+        {
+            for (int index = 0; index < outputMemoryLayout.GetActiveSize(dimension); ++index)
+            {
+                coordinates[dimension] = index;
+
+                auto inputLocation = ReorderOutputToInputLocation(coordinates);
+                auto inputIndex = inputMemoryLayout.GetEntryOffset(inputLocation);
+                auto outputIndex = outputMemoryLayout.GetEntryOffset(coordinates);
+                output[outputIndex] = _input[inputIndex];
+            }
+        }
+        else
+        {
+            for (int index = 0; index < outputMemoryLayout.GetActiveSize(dimension); ++index)
+            {
+                coordinates[dimension] = index;
+                ComputeDimensionLoop(inputMemoryLayout, outputMemoryLayout, dimension + 1, coordinates, output);
+            }
+        }
     }
 
     // TODO: for each dimension, loop over minimum of input and output interval. Then we don't have to check if the value is out-of-bounds
     template <typename ValueType>
     void ReorderDataNode<ValueType>::Compute() const
     {
-        model::Shape inputIncrement = _inputMemoryLayout.GetCumulativeIncrement();
-        model::Shape outputIncrement = _outputMemoryLayout.GetCumulativeIncrement();
-
-        int outputSize = _outputMemoryLayout.GetMemorySize();
-        std::vector<ValueType> output(outputSize, _paddingValue); // initialize to padding value
-
-        // loop over output
-        for (int x = 0; x < _outputMemoryLayout.GetActiveSize(0); ++x)
+        const auto inputMemoryLayout = GetInputMemoryLayout();
+        const auto outputMemoryLayout = _output.GetMemoryLayout();
+        if (outputMemoryLayout == inputMemoryLayout)
         {
-            for (int y = 0; y < _outputMemoryLayout.GetActiveSize(1); ++y)
-            {
-                for (int z = 0; z < _outputMemoryLayout.GetActiveSize(2); ++z)
-                {
-                    auto inputLocation = ReorderOutputToInputLocation({ x, y, z });
-                    auto inputIndex = _inputMemoryLayout.GetEntryOffset(inputLocation);
-                    auto outputIndex = _outputMemoryLayout.GetEntryOffset({ x, y, z });
-                    output[outputIndex] = _input[inputIndex];
-                }
-            }
+            _output.SetOutput(_input.GetValue());
         }
+        else
+        {
+            const int numDimensions = inputMemoryLayout.NumDimensions();
+            const int outputSize = outputMemoryLayout.GetMemorySize();
+            if (numDimensions != outputMemoryLayout.NumDimensions())
+            {
+                throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Error: input and output layouts must have same dimension");
+            }
 
-        _output.SetOutput(output);
+            std::vector<ValueType> output(outputSize, _paddingValue); // initialize to padding value
+            std::vector<int> coordinates(numDimensions);
+            ComputeDimensionLoop(inputMemoryLayout, outputMemoryLayout, 0, coordinates, output);
+            _output.SetOutput(output);
+        }
+    }
+
+
+    template <typename ValueType>
+    void ReorderDataNode<ValueType>::CompileDimensionLoop(emitters::IRFunctionEmitter& function, emitters::IRLocalArray input, const model::PortMemoryLayout& inputMemoryLayout, emitters::IRLocalArray output, const model::PortMemoryLayout& outputMemoryLayout, int dimension, std::vector<emitters::IRLocalScalar>& coordinates) const
+    {
+        if (dimension == inputMemoryLayout.NumDimensions() - 1) // last dimension
+        {
+            function.For(outputMemoryLayout.GetActiveSize(dimension), [=](emitters::IRFunctionEmitter& function, emitters::IRLocalScalar index) {
+                std::vector<emitters::IRLocalScalar> localCoords = coordinates;
+                localCoords[dimension] = index;
+
+                auto inputLocation = this->ReorderOutputToInputLocation(localCoords);
+                auto inputIndex = model::EmitGetEntryOffset(function, inputLocation, inputMemoryLayout);
+                auto outputIndex = model::EmitGetEntryOffset(function, localCoords, outputMemoryLayout);
+                output[outputIndex] = input[inputIndex];
+            });
+        }
+        else
+        {
+            function.For(outputMemoryLayout.GetActiveSize(dimension), [=](auto& function, auto index) {
+                std::vector<emitters::IRLocalScalar> localCoords = coordinates;
+                localCoords[dimension] = index;
+                this->CompileDimensionLoop(function, input, inputMemoryLayout, output, outputMemoryLayout, dimension + 1, localCoords);
+            });
+        }
     }
 
     template <typename ValueType>
     void ReorderDataNode<ValueType>::Compile(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function)
     {
-        llvm::Value* pInput = compiler.EnsurePortEmitted(this->input);
-        llvm::Value* pOutput = compiler.EnsurePortEmitted(this->output, _paddingValue);
         assert(this->input.Size() > 1);
+        auto input = function.LocalArray(compiler.EnsurePortEmitted(this->input));
+        auto output = function.LocalArray(compiler.EnsurePortEmitted(this->output, _paddingValue));
 
-        int outputSize = _outputMemoryLayout.GetMemorySize();
-        UNUSED(outputSize);
+        const auto inputMemoryLayout = GetInputMemoryLayout();
+        const auto outputMemoryLayout = GetOutputMemoryLayout();
 
-        auto xLoop = function.ForLoop();
-        xLoop.Begin(_outputMemoryLayout.GetActiveSize(0));
+        const int numDimensions = inputMemoryLayout.NumDimensions();
+
+        if (numDimensions != outputMemoryLayout.NumDimensions())
         {
-            llvm::Value* x = xLoop.LoadIterationVariable();
-
-            auto yLoop = function.ForLoop();
-            yLoop.Begin(_outputMemoryLayout.GetActiveSize(1));
-            {
-                llvm::Value* y = yLoop.LoadIterationVariable();
-
-                auto zLoop = function.ForLoop();
-                zLoop.Begin(_outputMemoryLayout.GetActiveSize(2));
-                {
-                    llvm::Value* z = zLoop.LoadIterationVariable();
-                    auto inputLocation = ReorderOutputToInputLocation({ x, y, z });
-                    auto inputIndex = _inputMemoryLayout.EmitGetEntryOffset(function, inputLocation);
-                    auto outputIndex = _outputMemoryLayout.EmitGetEntryOffset(function, { x, y, z });
-                    llvm::Value* value = function.ValueAt(pInput, inputIndex);
-                    function.SetValueAt(pOutput, outputIndex, value);
-                }
-                zLoop.End();
-            }
-            yLoop.End();
+            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Error: input and output layouts must have same dimension");
         }
-        xLoop.End();
+
+        std::vector<emitters::IRLocalScalar> coordinates(numDimensions, function.LocalScalar());
+        CompileDimensionLoop(function, input, inputMemoryLayout, output, outputMemoryLayout, 0, coordinates);
+    }
+
+    template <typename ValueType>
+    ell::utilities::ArchiveVersion ReorderDataNode<ValueType>::GetArchiveVersion() const
+    {
+        constexpr utilities::ArchiveVersion currentArchiveVersion = { utilities::ArchiveVersionNumbers::v8_port_memory_layout };
+        return std::max(currentArchiveVersion, CompilableNode::GetArchiveVersion());
+    }
+
+    template <typename ValueType>
+    bool ReorderDataNode<ValueType>::CanReadArchiveVersion(const utilities::ArchiveVersion& version) const
+    {
+        return CompilableNode::CanReadArchiveVersion(version);
     }
 
     template <typename ValueType>
@@ -178,8 +267,7 @@ namespace nodes
         CompilableNode::WriteToArchive(archiver);
         archiver[defaultInputPortName] << _input;
         archiver["inputLayout"] << _inputMemoryLayout;
-        archiver["outputLayout"] << _outputMemoryLayout;
-        archiver["order"] << _outputDimensionOrder;
+        archiver["outputLayout"] << GetOutputMemoryLayout();
         archiver["paddingValue"] << _paddingValue;
     }
 
@@ -189,8 +277,38 @@ namespace nodes
         CompilableNode::ReadFromArchive(archiver);
         archiver[defaultInputPortName] >> _input;
         archiver["inputLayout"] >> _inputMemoryLayout;
-        archiver["outputLayout"] >> _outputMemoryLayout;
-        archiver["order"] >> _outputDimensionOrder;
+        model::PortMemoryLayout outputMemoryLayout;
+        if (archiver.HasNextPropertyName("outputLayout"))
+        {
+            // backward-compatability
+            archiver["outputLayout"] >> outputMemoryLayout;
+
+            if (archiver.HasNextPropertyName("order"))
+            {
+                std::vector<int> order;
+                archiver["order"] >> order;
+                outputMemoryLayout = model::PortMemoryLayout(outputMemoryLayout.GetActiveSize(), outputMemoryLayout.GetStride(), outputMemoryLayout.GetOffset(), order);
+            }
+            _output.SetMemoryLayout(outputMemoryLayout);
+        }
+        else
+        {
+            _output.SetMemoryLayout(_inputMemoryLayout);
+            if (archiver.HasNextPropertyName("order"))
+            {
+                std::vector<int> order;
+                archiver["order"] >> order;
+                _output.SetMemoryLayout(GetOutputMemoryLayout().ReorderedCopy(order));
+            }
+        }
+
+        if (archiver.HasNextPropertyName("order"))
+        {
+            std::vector<int> order;
+            archiver["order"] >> order;
+            _output.SetMemoryLayout(GetOutputMemoryLayout().ReorderedCopy(order));
+        }
+
         archiver["paddingValue"] >> _paddingValue;
     }
 

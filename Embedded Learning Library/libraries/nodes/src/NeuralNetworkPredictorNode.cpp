@@ -17,7 +17,6 @@
 #include "Exception.h"
 
 // stl
-#include <cassert>
 #include <string>
 #include <vector>
 
@@ -44,7 +43,10 @@ namespace nodes
     NeuralNetworkPredictorNode<ValueType>::NeuralNetworkPredictorNode(const model::PortElements<ValueType>& input, const PredictorType& predictor)
         : Node({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, GetShapeSize(predictor.GetOutputShape())), _predictor(predictor)
     {
-        assert(input.Size() == GetShapeSize(_predictor.GetInputShape()));
+        if (input.Size() != GetShapeSize(_predictor.GetInputShape()))
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Input to predictor doesn't match the expected input size");
+        }
     }
 
     template <typename ValueType>
@@ -115,9 +117,9 @@ namespace nodes
         if (padding != 0)
         {
             // If the input layer wants padding on its output, add a ReorderDataNode to add padding
-            model::PortMemoryLayout inputNodeShape({ (int)inputShape.NumRows(), (int)inputShape.NumColumns(), (int)inputShape.NumChannels() });
-            model::PortMemoryLayout paddedInputNodeShape({ (int)inputShape.NumRows(), (int)inputShape.NumColumns(), (int)inputShape.NumChannels() }, { (int)padding, (int)padding, 0 });
-            auto paddedInputNode = transformer.AddNode<ReorderDataNode<ValueType>>(newInputElements, inputNodeShape, paddedInputNodeShape, predictors::neural::GetPaddingValue<ValueType>(outputPadding.paddingScheme));
+            model::PortMemoryLayout inputNodeLayout(model::MemoryShape{ (int)inputShape.NumRows(), (int)inputShape.NumColumns(), (int)inputShape.NumChannels() });
+            model::PortMemoryLayout paddedInputNodeLayout(model::MemoryShape{ (int)inputShape.NumRows(), (int)inputShape.NumColumns(), (int)inputShape.NumChannels() }, model::MemoryShape{ (int)padding, (int)padding, 0 });
+            auto paddedInputNode = transformer.AddNode<ReorderDataNode<ValueType>>(newInputElements, inputNodeLayout, paddedInputNodeLayout, predictors::neural::GetPaddingValue<ValueType>(outputPadding.paddingScheme));
             newInputElements = paddedInputNode->output;
         }
 
@@ -130,7 +132,10 @@ namespace nodes
         {
             auto numInputs = GetShapeSize(layer->GetInputShape());
             DEBUG_USED(numInputs);
-            assert(prevOutputSize == numInputs);
+            if (prevOutputSize != numInputs) 
+            {
+                throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Input to layer doesn't match the output size of the previous layer");
+            }
             auto layerNode = AddLayerNode(transformer, *layer, layerInputs, options, state);
 
             prevOutputSize = GetShapeSize(layer->GetOutputShape());
@@ -147,6 +152,12 @@ namespace nodes
     {
         auto inputDataVector = typename PredictorType::DataVectorType(_input.GetIterator());
         _output.SetOutput(_predictor.Predict(inputDataVector));
+    }
+
+    template <typename ValueType>
+    void NeuralNetworkPredictorNode<ValueType>::Reset()
+    {
+        _predictor.Reset();
     }
 
     // explicit specialization for float, double

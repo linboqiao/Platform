@@ -26,15 +26,15 @@ namespace predictors
         template <typename ElementType>
         struct LSTMParameters
         {
-            typename Layer<ElementType>::MatrixType& inputWeights;
-            typename Layer<ElementType>::MatrixType& forgetMeWeights;
-            typename Layer<ElementType>::MatrixType& candidateWeights;
-            typename Layer<ElementType>::MatrixType& outputWeights;
+            typename Layer<ElementType>::ConstMatrixReferenceType inputWeights;
+            typename Layer<ElementType>::ConstMatrixReferenceType forgetMeWeights;
+            typename Layer<ElementType>::ConstMatrixReferenceType candidateWeights;
+            typename Layer<ElementType>::ConstMatrixReferenceType outputWeights;
 
-            typename Layer<ElementType>::VectorType& inputBias;
-            typename Layer<ElementType>::VectorType& forgetMeBias;
-            typename Layer<ElementType>::VectorType& candidateBias;
-            typename Layer<ElementType>::VectorType& outputBias;
+            typename Layer<ElementType>::ConstVectorReferenceType inputBias;
+            typename Layer<ElementType>::ConstVectorReferenceType forgetMeBias;
+            typename Layer<ElementType>::ConstVectorReferenceType candidateBias;
+            typename Layer<ElementType>::ConstVectorReferenceType outputBias;
         };
 
         /// <summary>
@@ -114,7 +114,7 @@ namespace predictors
             const VectorType& GetOutputBias() const { return _outputBias; }
 
             /// <summary> Resets the layer's hidden values </summary>
-            void Reset();
+            void Reset() override;
 
             /// <summary> Gets the name of this type (for serialization). </summary>
             ///

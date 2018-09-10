@@ -31,7 +31,7 @@ namespace nodes
     {
         auto&& inputLayout = this->GetInputMemoryLayout();
         auto&& outputLayout = this->GetOutputMemoryLayout();
-        if (!model::ShapesEqual(inputLayout.GetActiveSize(), outputLayout.GetActiveSize()))
+        if (inputLayout.GetActiveSize() != outputLayout.GetActiveSize())
         {
             throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Input and output active area sizes don't match");
         }
@@ -52,6 +52,14 @@ namespace nodes
         return true;
     }
 
+    template <typename ValueType, template <typename> class ActivationFunctionType>
+    void ActivationLayerNode<ValueType, ActivationFunctionType>::Copy(model::ModelTransformer& transformer) const
+    {
+        auto newPortElements = transformer.TransformPortElements(this->_input.GetPortElements());
+        auto newNode = transformer.AddNode<ActivationLayerNode<ValueType, ActivationFunctionType>>(newPortElements, this->_layer);
+        transformer.MapNodeOutput(this->_output, newNode->output);
+    }
+
     //
     // ParametricReLUActivationLayerNode
     //
@@ -62,7 +70,7 @@ namespace nodes
     {
         auto&& inputLayout = this->GetInputMemoryLayout();
         auto&& outputLayout = this->GetOutputMemoryLayout();
-        if (!model::ShapesEqual(inputLayout.GetActiveSize(), outputLayout.GetActiveSize()))
+        if (inputLayout.GetActiveSize() != outputLayout.GetActiveSize())
         {
             throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Input and output active area sizes don't match");
         }
@@ -89,6 +97,15 @@ namespace nodes
         transformer.MapNodeOutput(this->output, computeNode->output);
         return true;
     }
+
+    template <typename ValueType>
+    void ParametricReLUActivationLayerNode<ValueType>::Copy(model::ModelTransformer& transformer) const
+    {
+        auto newPortElements = transformer.TransformPortElements(this->_input.GetPortElements());
+        auto newNode = transformer.AddNode<ParametricReLUActivationLayerNode<ValueType>>(newPortElements, this->_layer);
+        transformer.MapNodeOutput(this->_output, newNode->output);
+    }
+
 
     // Explicit specialization
     template class ActivationLayerNode<float, ell::predictors::neural::HardSigmoidActivation>;

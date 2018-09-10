@@ -55,18 +55,26 @@ namespace nodes
         /// <summary> Constructor. </summary>
         ///
         /// <param name="input"> Port elements for input values (sample time, current time). </param>
-        /// <param name="shape"> The input shape. </param>
-        /// <param name="sourceFunctionName"> The source function name to be emitted. </param>
-        /// <param name="source"> The optional source function that will provide input values. </param>
-        SourceNode(const model::PortElements<nodes::TimeTickType>& input, const math::TensorShape& shape, const std::string& sourceFunctionName, SourceFunction<ValueType> source = nullptr);
-
-        /// <summary> Constructor. </summary>
-        ///
-        /// <param name="input"> Port elements for input values (sample time, current time). </param>
         /// <param name="inputVectorSize"> The input vector size. </param>
         /// <param name="sourceFunctionName"> The source function name to be emitted. </param>
         /// <param name="source"> The optional source function that will provide input values. </param>
         SourceNode(const model::PortElements<nodes::TimeTickType>& input, size_t inputVectorSize, const std::string& sourceFunctionName, SourceFunction<ValueType> source = nullptr);
+
+        /// <summary> Constructor. </summary>
+        ///
+        /// <param name="input"> Port elements for input values (sample time, current time). </param>
+        /// <param name="shape"> The input shape. </param>
+        /// <param name="sourceFunctionName"> The source function name to be emitted. </param>
+        /// <param name="source"> The optional source function that will provide input values. </param>
+        SourceNode(const model::PortElements<nodes::TimeTickType>& input, const model::MemoryShape& shape, const std::string& sourceFunctionName, SourceFunction<ValueType> source = nullptr);
+
+        /// <summary> Constructor. </summary>
+        ///
+        /// <param name="input"> Port elements for input values (sample time, current time). </param>
+        /// <param name="layout"> The input memory layout. </param>
+        /// <param name="sourceFunctionName"> The source function name to be emitted. </param>
+        /// <param name="source"> The optional source function that will provide input values. </param>
+        SourceNode(const model::PortElements<nodes::TimeTickType>& input, const model::PortMemoryLayout& layout, const std::string& sourceFunctionName, SourceFunction<ValueType> source = nullptr);
 
         /// <summary> Gets the name of this type (for serialization). </summary>
         ///
@@ -93,6 +101,11 @@ namespace nodes
         ///
         /// <param name="function"> The source function to set. </param>
         void SetSourceFunction(SourceFunction<ValueType> function) { _source = function; }
+
+        /// <summary> Sets the value output by this node </summary>
+        ///
+        /// <param name="inputValues"> The values for this node to output </param>
+        void SetInput(std::vector<ValueType> inputValues);
 
     protected:
         void Compute() const override;

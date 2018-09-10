@@ -35,15 +35,21 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_path, "../pythonlibs"))
 import find_ell
 import picluster
-from download_helper import download_file, download_and_extract_model
+from download_helper import *
 from remoterunner import RemoteRunner
 import logger
+
+# possible values for the compile option.
+COMPILE_NONE=0
+COMPILE_INCREMENTAL=1
+COMPILE_FULL=2
 
 class DriveTest:
     def __init__(self, ipaddress=None, cluster=None, outdir=None, profile=False, 
             model=None, labels=None, target="pi3", target_dir="/home/pi/pi3", 
             username="pi", password="raspberry", iterations=1, expected=None, 
-            blas=True, test=False, verbose=True, timeout=None):
+            blas=True, compile=COMPILE_INCREMENTAL, test=True, verbose=True, timeout=None, apikey=None,
+            gitrepo = None):
         self.ipaddress = ipaddress
         self.build_root = find_ell.find_ell_build()
         self.ell_root = os.path.dirname(self.build_root)   
@@ -55,12 +61,17 @@ class DriveTest:
         self.password = password
         self.target = target
         self.cluster = cluster
+        self.apikey = apikey
         self.blas = blas
         self.expected = expected
         self.profile = profile
+        self.compile = compile
         self.test = test
         self.verbose = verbose
         self.logger = logger.get()
+        self.rePlatform = "ARMv7.*"
+        if target == "pi0":
+            self.rePlatform = "ARMv6.*"
         if timeout:
             self.timeout = int(timeout)
         else:
@@ -71,23 +82,30 @@ class DriveTest:
         self.machine = None
         self.ell_json = None
         self.created_dirs = []
-        self.gallery_url = "https://github.com/Microsoft/ELL-models/raw/master/models/ILSVRC2012/"
+        self.gallery_url = "https://github.com/Microsoft/ELL-models/raw/master/"
+        if gitrepo:
+            self.gallery_url = clone_repo(gitrepo)
 
         # initialize state from the args
         if not self.output_dir:
             self.output_dir = "test"
         self.test_dir = os.path.abspath(self.output_dir)
-        
-        if os.path.isdir(self.test_dir):
-            rmtree(self.test_dir)
-        os.makedirs(self.test_dir)
 
-        self.extract_model_info(self.ell_model, self.labels_file)
+        if os.path.isdir(self.test_dir):
+            if self.compile == COMPILE_FULL:
+                rmtree(self.test_dir)
+        else:
+            if self.compile == COMPILE_NONE:
+                raise Exception("Test only usage requires outdir '{}' to exist already".format(self.output_dir))
+            os.makedirs(self.test_dir)
+
+        if self.compile:
+            self.extract_model_info(self.ell_model, self.labels_file)
+            
         self.output_dir = os.path.join(self.test_dir, self.target)
 
-        self.resolve_address(self.ipaddress, self.cluster)
-        if not os.path.isdir(self.output_dir):
-            os.makedirs(self.output_dir)
+        if self.test:
+            self.resolve_address(self.ipaddress, self.cluster)
 
     def __enter__(self):
         """Called when this object is instantiated with 'with'"""
@@ -111,7 +129,7 @@ class DriveTest:
         """Resolves the ip address of the target device and locks it if it is
         part of a cluster"""
         if cluster:
-            self.cluster = picluster.PiBoardTable(cluster)
+            self.cluster = picluster.PiBoardTable(cluster, self.apikey)
             task = " ".join((current_script, self.model_name))
 
             if ipaddress:
@@ -120,7 +138,7 @@ class DriveTest:
                 self.logger.info("Locked requested machine at " + self.machine.ip_address)
             else:
                 # No specific machine requested, find a free machine
-                self.machine = self.cluster.wait_for_free_machine(task)
+                self.machine = self.cluster.wait_for_free_machine(task, rePlatform=self.rePlatform)
                 self.logger.info("Locked machine at " + self.machine.ip_address)
 
             # if any of the above fails, this line should throw
@@ -140,10 +158,18 @@ class DriveTest:
             name,ext = os.path.splitext(ell_model)
             if ext.lower() == ".zip":
                 with zipfile.ZipFile(ell_model) as myzip:
-                    filename = myzip.extract(myzip.filelist[0], self.test_dir)
+                    extract = True
+                    for name in myzip.namelist():
+                        if os.path.splitext(name)[1] == ".ell":
+                            filename = os.path.join(self.test_dir, name)
+                            if os.path.isfile(filename) and os.path.getmtime(self.ell_model) < os.path.getmtime(filename):
+                                # already extracted and up to date.
+                                extract = False
+                    if extract:
+                        filename = myzip.extract(myzip.filelist[0], self.test_dir)
+                        self.logger.info("extracted: {}".format(filename))
 
                 if filename != "":
-                    self.logger.info("extracted: " + filename)
                     self.ell_model = filename
                 else:
                     # not a zip archive
@@ -165,12 +191,14 @@ class DriveTest:
         if not os.path.isdir(target_dir):
             os.makedirs(target_dir)
         for path in filelist:
+            head, file_name = os.path.split(path)
+            dest = os.path.join(target_dir, file_name)
+            if os.path.isfile(dest) and os.path.getmtime(path) < os.path.getmtime(dest):
+                continue # this file already up to date
             if self.verbose:
                 self.logger.info("Copying file: " + path + " to " + target_dir)
             if not os.path.isfile(path):
                 raise Exception("expected file not found: " + path)
-            head, file_name = os.path.split(path)
-            dest = os.path.join(target_dir, file_name)
             copyfile(path, dest)
 
     def configure_runtest(self, dest):
@@ -205,10 +233,13 @@ class DriveTest:
             self.labels_file], self.output_dir)
         self.configure_runtest(self.output_dir)
 
+    def remove_bitcode(self):
         # avoid copying over bitcode files (as they are big)
         bitcode_files = self.find_files_with_extension(self.output_dir, "bc")
         for bitcode in bitcode_files:
-            os.remove(os.path.join(self.output_dir, bitcode))
+            bitcode_path = os.path.join(self.output_dir, bitcode)
+            if os.path.isfile(bitcode_path):
+                os.remove(bitcode_path)
 
     def get_default_model(self):
         """Downloads the default model"""
@@ -220,7 +251,7 @@ class DriveTest:
             if (not os.path.isfile(self.ell_model)) :
                 self.logger.info("downloading default model...")
                 download_and_extract_model(
-                    self.gallery_url + self.model_name + "/" + self.model_name + ".ell.zip",
+                    self.gallery_url + "models/ILSVRC2012/" + self.model_name + "/" + self.model_name + ".ell.zip",
                     model_extension=".ell",
                     local_folder=self.test_dir)
 
@@ -229,7 +260,7 @@ class DriveTest:
             self.labels_file = "categories.txt"
         if (not os.path.isfile(self.labels_file)):
             self.logger.info("downloading default categories.txt...")
-            self.labels_file = download_file(self.gallery_url + "/categories.txt",
+            self.labels_file = download_file(self.gallery_url + "models/ILSVRC2012/categories.txt",
                 local_folder=self.test_dir)
 
     def get_model(self):
@@ -238,9 +269,18 @@ class DriveTest:
         self.get_default_labels()
         self.logger.info("using ELL model: " + self.model_name)
 
-    def make_project(self):
+    def wrap_project(self):
         """Creates a project for the model and target"""
-        if os.path.isdir(self.output_dir):
+        if os.path.isdir(self.output_dir):            
+            if self.compile == COMPILE_INCREMENTAL:
+                try:
+                    base_name = os.path.basename(self.ell_model)
+                    obj_file = os.path.join(self.output_dir, os.path.splitext(base_name)[0] + ".obj")
+                    if os.path.isfile(obj_file) and os.path.getmtime(self.ell_model) < os.path.getmtime(obj_file):
+                        self.logger.info("wrapped model already up to date")
+                        return # already up to date.
+                except:
+                    pass # model needs to be re-compiled then.
             rmtree(self.output_dir)
         sys.path.append(os.path.join(current_path, "../../wrap"))
         mpp = __import__("wrap")
@@ -291,28 +331,31 @@ class DriveTest:
     def run_test(self):
         """Runs the test"""
         try:
-            if not self.test:
-                self.get_model()
-                self.make_project()
+            if self.compile:
+                self.get_model() 
+                self.wrap_project()
                 self.get_bash_files()
+                self.remove_bitcode()
 
-            start_time = time.time()
-            # do not pass cluster to remote runner because we've already locked the machine.
-            runner = RemoteRunner(cluster=None,
-                                  ipaddress=self.ipaddress,
-                                  username=self.username,
-                                  password=self.password,
-                                  source_dir=self.output_dir,
-                                  target_dir=self.target_dir,
-                                  command="runtest.sh",
-                                  verbose=self.verbose,
-                                  start_clean=not self.test,
-                                  timeout=self.timeout,
-                                  cleanup=False)
-            output = runner.run_command()
-            self.verify_remote_test(output)
-            end_time = time.time()
-            self.logger.info("Remote test time: %f seconds" % (end_time - start_time))
+            if self.test:
+                start_time = time.time()
+                print("source={}".format(self.output_dir))
+                # do not pass cluster to remote runner because we've already locked the machine.
+                runner = RemoteRunner(cluster=None,
+                                    ipaddress=self.ipaddress,
+                                    username=self.username,
+                                    password=self.password,
+                                    source_dir=self.output_dir,
+                                    target_dir=self.target_dir,
+                                    command="runtest.sh",
+                                    verbose=self.verbose,
+                                    start_clean=not self.test,
+                                    timeout=self.timeout,
+                                    cleanup=False)
+                output = runner.run_command()
+                self.verify_remote_test(output)
+                end_time = time.time()
+                self.logger.info("Remote test time: %f seconds" % (end_time - start_time))
 
         except:
             errorType, value, traceback = sys.exc_info()
@@ -338,6 +381,10 @@ if __name__ == "__main__":
     arg_parser.add_argument("--outdir", default=".", help="where to store local working files as a staging area (default '.')")
     arg_parser.add_argument("--profile", help="enable profiling functions in the ELL module", action="store_true")
 
+    model_group = arg_parser.add_argument_group("phase", "options for two separate phases")
+    arg_parser.add_argument("--compile", default="true", help="enable compile step preparing model for --test phase (default 'True')")
+    arg_parser.add_argument("--test", default="true", help="enable test phase, assume the outdir has already been built (default 'True')")
+
     model_group = arg_parser.add_argument_group("model", "options for loading a non-default model. All 3 must be specified for a non-default model to be used.")
     model_group.add_argument("--model", help="path to an ELL model file, the filename (without extension) will be used as the model name")
     model_group.add_argument("--labels", help="path to the labels file for evaluating the model")
@@ -350,7 +397,6 @@ if __name__ == "__main__":
     arg_parser.add_argument("--iterations", "-i", type=int, help="the number of iterations for each predict (default 1)", default=1)
     arg_parser.add_argument("--expected", "-e", help="the string to search for to verify test passed (default '')", default=None)
     arg_parser.add_argument("--blas", help="enable or disable the use of Blas on the target device (default 'True')", default="True")
-    arg_parser.add_argument("--test", help="test only, assume the outdir has already been built (default 'False')", action="store_true")
     arg_parser.add_argument("--verbose", help="enable or disable verbose print output (default 'True')", default="True")
     arg_parser.add_argument("--timeout", help="set remote test run timeout in seconds (default '300')", default="300")
 
@@ -365,5 +411,5 @@ if __name__ == "__main__":
     with DriveTest(args.ipaddress,  args.cluster, args.outdir, args.profile, 
         args.model, args.labels, args.target, args.target_dir, args.username, 
         args.password, args.iterations, args.expected, str2bool(args.blas), 
-        args.test, str2bool(args.verbose), args.timeout) as tester:
+        str2bool(args.compile), str2bool(args.test), str2bool(args.verbose), args.timeout) as tester:
         tester.run_test()

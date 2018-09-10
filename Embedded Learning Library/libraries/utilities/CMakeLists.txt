@@ -20,6 +20,7 @@ set(src
   src/IntegerStack.cpp
   src/JsonArchiver.cpp
   src/Logger.cpp
+  src/MemoryLayout.cpp
   src/ObjectArchive.cpp
   src/ObjectArchiver.cpp
   src/OutputStreamImpostor.cpp
@@ -53,12 +54,15 @@ set(include
   include/IIterator.h
   include/IndentedTextWriter.h
   include/IntegerList.h
+  include/IntegerNArray.h
   include/IntegerStack.h
   include/JsonArchiver.h
   include/Logger.h
+  include/MemoryLayout.h
   include/MillisecondTimer.h
   include/ObjectArchive.h
   include/ObjectArchiver.h
+  include/Optional.h
   include/OutputStreamImpostor.h
   include/ParallelTransformIterator.h
   include/PropertyBag.h
@@ -92,6 +96,7 @@ set(tcc
   tcc/JsonArchiver.tcc
   tcc/ObjectArchive.tcc
   tcc/ObjectArchiver.tcc
+  tcc/Optional.tcc
   tcc/OutputStreamImpostor.tcc
   tcc/ParallelTransformIterator.tcc
   tcc/PropertyBag.tcc

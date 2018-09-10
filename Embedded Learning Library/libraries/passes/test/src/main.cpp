@@ -27,8 +27,15 @@ int main()
 {
     try
     {
-        TestModelOptimizer();
-        TestModelCompilePlusOptimize();
+        TestFuseLinearOpsPasses();
+
+        // disabled until demo branch is fully integrated into master
+        #if 0
+        TestOptimizeReorderDataNodes1();
+        TestOptimizeReorderDataNodes2();
+        TestOptimizeReorderDataNodes3();
+        TestOptimizeReorderDataNodes4();
+        #endif
     }
     catch (const utilities::Exception& exception)
     {

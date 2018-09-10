@@ -11,6 +11,7 @@
 #include "Node.h"
 #include "OutputPort.h"
 #include "Port.h"
+#include "PortMemoryLayout.h"
 
 // data
 #include "IndexValue.h"
@@ -21,7 +22,6 @@
 
 // stl
 #include <algorithm>
-#include <cassert>
 #include <deque>
 #include <vector>
 
@@ -145,6 +145,11 @@ namespace model
         /// <returns> The dimensionality of the output </returns>
         size_t Size() const;
 
+        /// <summary> Returns the memory layout of the output </summary>
+        ///
+        /// <returns> The memory layout of the output </returns>
+        PortMemoryLayout GetMemoryLayout() const;
+
         /// <summary> The index of the first element this range refers to </summary>
         ///
         /// <returns> The index of the first element this range refers to </returns>
@@ -198,7 +203,7 @@ namespace model
     private:
         const OutputPortBase* _referencedPort = nullptr;
         size_t _startIndex = 0;
-        size_t _numValues = 0;
+        size_t _sliceSize = 0;
         bool _isFixedSize = false;
     };
 
@@ -282,6 +287,11 @@ namespace model
         ///
         /// <returns> The dimensionality of the output </returns>
         size_t Size() const { return _size; }
+
+        /// <summary> Returns the memory layout of the output </summary>
+        ///
+        /// <returns> The memory layout of the output </returns>
+        PortMemoryLayout GetMemoryLayout() const;
 
         /// <summary> Gets a forward read-only index-value iterator that iterates over the `PortElementsBase` output values. </summary>
         ///
@@ -507,7 +517,7 @@ namespace model
         Port::PortType GetPortType() const { return _portType; }
 
         /// <summary> Returns the dimensionality of the output </summary>
-        size_t Size() const { return _numValues; }
+        size_t Size() const { return _sliceSize; }
 
         /// <summary> Returns the dimensionality of the output </summary>
         size_t GetStartIndex() const { return _startIndex; }
@@ -528,7 +538,7 @@ namespace model
         std::string _portName;
         Port::PortType _portType = Port::PortType::none;
         size_t _startIndex = 0;
-        size_t _numValues = 0;
+        size_t _sliceSize = 0;
         bool _isFixedSize = false;
     };
 

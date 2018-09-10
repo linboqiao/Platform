@@ -51,7 +51,7 @@ foreach(llvm_version 3.9)
     endif()
 endforeach()
 
-if(LLVM_FOUND)
+if(LLVM_FOUND AND LLVM_PACKAGE_VERSION EQUAL 3.9)
     message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
     message("Found LLVM package version ${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}")
     find_program(llvm-config NAMES llvm-config-${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR} llvm-config PATHS "${LLVM_TOOLS_BINARY_DIR}")
@@ -222,7 +222,7 @@ elseif(WIN32) # Didn't find LLVM via find_package. If we're on Windows, try inst
 
     foreach(LIBRARY ${LLVM_LIBS})
         add_library(${LIBRARY} STATIC IMPORTED)
-        set_property(TARGET ${LIBRARY} PROPERTY IMPORTED_LOCATION_DEBUG ${LLVM_LIBROOT_DEBUG}/${LIBRARY}.lib)
+        set_property(TARGET ${LIBRARY} PROPERTY IMPORTED_LOCATION_DEBUG ${LLVM_LIBROOT_RELEASE}/${LIBRARY}.lib)
         set_property(TARGET ${LIBRARY} PROPERTY IMPORTED_LOCATION_RELEASE ${LLVM_LIBROOT_RELEASE}/${LIBRARY}.lib)
         set_property(TARGET ${LIBRARY} PROPERTY IMPORTED_LOCATION_RELWITHDEBINFO ${LLVM_LIBROOT_RELEASE}/${LIBRARY}.lib)
         set_property(TARGET ${LIBRARY} PROPERTY IMPORTED_LOCATION_MINSIZEREL ${LLVM_LIBROOT_RELEASE}/${LIBRARY}.lib)

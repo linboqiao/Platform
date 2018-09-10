@@ -14,7 +14,11 @@
 #include "IREmitter.h"
 #include "IRIfEmitter.h"
 #include "IRLocalValue.h"
+#include "IRLocalScalar.h"
+#include "IRLocalArray.h"
+#include "IRLocalMultidimArray.h"
 #include "IRLoopEmitter.h"
+#include "IRParallelLoopEmitter.h"
 #include "IROptimizer.h"
 #include "IRTask.h"
 #include "Variable.h"
@@ -44,6 +48,9 @@ namespace emitters
 {
     class IRModuleEmitter;
 
+    /// <summary> A list of IRLocalScalar values </summary>
+    using IRScalarList = std::vector<IRLocalScalar>;
+
     /// <summary> Used to emit code into an existing LLVM IR Function </summary>
     class IRFunctionEmitter
     {
@@ -59,6 +66,11 @@ namespace emitters
         /// <summary> Gets the name of the function being emitted. </summary>
         std::string GetFunctionName() { return _name; }
 
+        /// <summary> Gets an `IRLocalPointer` wrapper for an LLVM value object. </summary>
+        ///
+        /// <param name="value"> The value to wrap. </param>
+        IRLocalPointer LocalPointer(llvm::Value* value);
+
         /// <summary> Gets an `IRLocalScalar` wrapper for an LLVM value object. </summary>
         ///
         /// <param name="value"> The value to wrap. </param>
@@ -72,11 +84,31 @@ namespace emitters
 
         /// <summary> Gets an uninitialized `IRLocalScalar` wrapper. </summary>
         IRLocalScalar LocalScalar();
-        
+
         /// <summary> Gets an `IRLocalArray` wrapper for an LLVM value object that represents an indexable array. </summary>
         ///
         /// <param name="value"> The value to wrap. </param>
         IRLocalArray LocalArray(llvm::Value* value);
+
+        /// <summary> Gets an `IRLocalMatrix` wrapper for an LLVM value object that represents a fixed-size array. </summary>
+        ///
+        /// <param name="value"> The value to wrap. </param>
+        /// <param name="shape"> A two-element vector describing the shape of the tensor. </param>
+        /// <param name="layout"> The order of the dimensions, outermost to innermost. </param>
+        IRLocalMatrix LocalMatrix(llvm::Value* value, const std::vector<int>& shape, std::array<int, 2> layout);
+
+        /// <summary> Gets an `IRLocalTensor` wrapper for an LLVM value object that represents a fixed-size array. </summary>
+        ///
+        /// <param name="value"> The value to wrap. </param>
+        /// <param name="shape"> A three-element vector describing the shape of the tensor. </param>
+        /// <param name="layout"> The order of the dimensions, outermost to innermost. </param>
+        IRLocalTensor LocalTensor(llvm::Value* value, const std::vector<int>& shape, std::array<int, 3> layout);
+
+        /// <summary> Gets an `IRLocalMultidimArray` wrapper for an LLVM value object that represents a fixed-size array. </summary>
+        ///
+        /// <param name="value"> The value to wrap. </param>
+        /// <param name="dimensions"> The sizes of the array's dimensions. </param>
+        IRLocalMultidimArray LocalMultidimArray(llvm::Value* value, std::initializer_list<int> dimensions);
 
         /// <summary> Gets an emitted variable by scope and name. </summary>
         ///
@@ -171,7 +203,7 @@ namespace emitters
         /// <summary> Emit pointer cast to a given pointer type. </summary>
         ///
         /// <param name="pValue"> Pointer to the input value. </param>
-        /// <param name="valueType"> The type to cast to. </param>
+        /// <param name="valueType"> The type to cast to. Must be a pointer type. </param>
         ///
         /// <returns> Pointer to an llvm::Value that represents the casted value. </returns>
         llvm::Value* CastPointer(llvm::Value* pValue, llvm::Type* valueType);
@@ -179,7 +211,7 @@ namespace emitters
         /// <summary> Emit pointer cast to a given pointer type. </summary>
         ///
         /// <param name="pValue"> Pointer to the input value. </param>
-        /// <param name="valueType"> The type to cast to. </param>
+        /// <param name="valueType"> The type to cast to. Must be a pointer type. </param>
         ///
         /// <returns> Pointer to an llvm::Value that represents the casted value. </returns>
         llvm::Value* CastPointer(llvm::Value* pValue, VariableType valueType);
@@ -195,7 +227,7 @@ namespace emitters
         /// <summary> Emit a cast from a pointer to an integer type. </summary>
         ///
         /// <param name="pValue"> Input value. </param>
-        /// <param name="destinationType"> Output type. </param>
+        /// <param name="destinationType"> Output pointer type. </param>
         ///
         /// <returns> Pointer to an llvm::Value that represents the casted value. </returns>
         llvm::Value* CastPointerToInt(llvm::Value* pValue, llvm::Type* destinationType);
@@ -253,6 +285,14 @@ namespace emitters
         /// <param name="arguments"> The function arguments. </param>
         ///
         /// <returns> Pointer to the result of the function call. </returns>
+        llvm::Value* Call(const std::string& name, IRScalarList arguments);
+
+        /// <summary> Emit a call to a function with arguments. </summary>
+        ///
+        /// <param name="name"> The function name. </param>
+        /// <param name="arguments"> The function arguments. </param>
+        ///
+        /// <returns> Pointer to the result of the function call. </returns>
         llvm::Value* Call(const std::string& name, std::initializer_list<llvm::Value*> arguments);
 
         /// <summary> Emit a call to a function with arguments. </summary>
@@ -261,7 +301,7 @@ namespace emitters
         /// <param name="arguments"> The function arguments. </param>
         ///
         /// <returns> Pointer to the result of the function call. </returns>
-        llvm::Value* Call(IRFunctionEmitter& function, std::vector<llvm::Value*> arguments);
+        llvm::Value* Call(IRFunctionEmitter& function, IRValueList arguments);
 
         /// <summary> Emit a call to a function with arguments. </summary>
         ///
@@ -277,7 +317,15 @@ namespace emitters
         /// <param name="arguments"> The function arguments. </param>
         ///
         /// <returns> Pointer to the result of the function call. </returns>
-        llvm::Value* Call(llvm::Function* pFunction, std::vector<llvm::Value*> arguments);
+        llvm::Value* Call(llvm::Function* pFunction, IRValueList arguments);
+
+        /// <summary> Emit a call to a function with arguments. </summary>
+        ///
+        /// <param name="pFunction"> Pointer to the llvm::Function. </param>
+        /// <param name="arguments"> The function arguments. </param>
+        ///
+        /// <returns> Pointer to the result of the function call. </returns>
+        llvm::Value* Call(llvm::Function* pFunction, IRScalarList arguments);
 
         /// <summary> Emit a return from a function with no return value. </summary>
         void Return();
@@ -639,6 +687,15 @@ namespace emitters
         /// <returns> Pointer to the array. </returns>
         llvm::AllocaInst* Variable(VariableType type, int size);
 
+        /// <summary> Emit a 2D stack array of the given dimensions. </summary>
+        ///
+        /// <param name="type"> The array entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to the array. </returns>
+        llvm::AllocaInst* Variable(VariableType type, int rows, int columns);
+
         /// <summary> Emit a stack array of the given size. </summary>
         ///
         /// <param name="type"> The array entry type. </param>
@@ -646,6 +703,15 @@ namespace emitters
         ///
         /// <returns> Pointer to the array. </returns>
         llvm::AllocaInst* Variable(llvm::Type* type, int size);
+
+        /// <summary> Emit a 2D stack array of the given dimensions. </summary>
+        ///
+        /// <param name="type"> The array entry type. </param>
+        /// <param name="rows"> The number of rows in the array. </param>
+        /// <param name="columns"> The number of columns in the array. </param>
+        ///
+        /// <returns> Pointer to the array. </returns>
+        llvm::AllocaInst* Variable(llvm::Type* type, int rows, int columns);
 
         /// <summary> Return an emitted stack variable and assign it a name. </summary>
         ///
@@ -684,7 +750,7 @@ namespace emitters
 
         /// <summary> Emit instruction to initialize a 0 value into the pointer location. </summary>
         ///
-        /// <param name="pPointer"> Pointer to the adress where the value is being stored. </param>
+        /// <param name="pPointer"> Pointer to the address where the value is being stored. </param>
         /// <param name="numElements"> Number of elements to fill in with zero at address.
         /// defaults to 1. </param>
         ///
@@ -789,13 +855,6 @@ namespace emitters
         /// <param name="fieldValues"> The values to set the fields to. </param>
         void FillStruct(llvm::Value* structPtr, const std::vector<llvm::Value*>& fieldValues);
 
-        /// <summary> Emits a pointer to a global. </summary>
-        ///
-        /// <param name="pGlobal"> Pointer to the first entry in an llvm global array. </param>
-        ///
-        /// <returns> Pointer to the first entry in the llvm global array. </returns>
-        llvm::Value* Pointer(llvm::GlobalVariable* pGlobal);
-
         /// <summary> Emit a pointer to an entry in an array. </summary>
         ///
         /// <param name="pArray"> Pointer to the array. </param>
@@ -849,10 +908,48 @@ namespace emitters
         // Control flow
         //
 
-        // Type aliases for lambda functions that define body regions
+        /// <summary> Types used to represent ranges for loops to iterate over </summary>
+        struct ConstLoopRange
+        {
+            int begin;
+            int end;
+        };
 
-        /// <summary> Type alias for for-loop body lambda. </summary>
-        using ForLoopBodyFunction = std::function<void(IRFunctionEmitter& function, llvm::Value* iterationVariable)>;
+        struct ConstTiledLoopRange
+        {
+            int begin;
+            int end;
+            int blockSize; // increment
+        };
+
+        struct LoopRange
+        {
+            emitters::IRLocalScalar begin;
+            emitters::IRLocalScalar end;
+        };
+
+        struct TiledLoopRange
+        {
+            emitters::IRLocalScalar begin;
+            emitters::IRLocalScalar end;
+            emitters::IRLocalScalar blockSize; // increment
+        };
+
+        /// <summary> Structure passed in to tiled loops instead of just a scalar index </summary>
+        struct BlockInterval
+        {
+            emitters::IRLocalScalar begin;
+            emitters::IRLocalScalar end;
+            emitters::IRLocalScalar size; // always == end-begin
+            emitters::IRLocalScalar index; // zero-based index of this block (so, begin = loop start + index*size)
+        };
+
+        /// <summary> Type aliases for for-loop body lambdas. </summary>
+        using ForLoopBodyFunction = std::function<void(IRFunctionEmitter& function, IRLocalScalar iterationVariable)>;
+        using MultiDimForLoopBodyFunction = std::function<void(emitters::IRFunctionEmitter& function, std::vector<emitters::IRLocalScalar> indices)>;
+        using TiledForLoopBodyFunction = std::function<void(emitters::IRFunctionEmitter& function, BlockInterval interval)>;
+        using TiledMultiDimForLoopBodyFunction = std::function<void(emitters::IRFunctionEmitter& function, std::vector<BlockInterval> intervals)>;
+        using ParallelForLoopBodyFunction = IRParallelForLoopEmitter::BodyFunction;
 
         /// <summary> Type alias for while-loop body lambda. </summary>
         using WhileLoopBodyFunction = std::function<void(IRFunctionEmitter& function)>;
@@ -864,7 +961,7 @@ namespace emitters
         ///
         /// <param name="count"> The number of iterations to make. </param>
         /// <param name="body"> A function that emits the body of the loop. </param>
-        void For(size_t count, ForLoopBodyFunction body);
+        void For(int count, ForLoopBodyFunction body);
 
         /// <summary> Emits a for loop counting from zero to a constant end value. </summary>
         ///
@@ -877,7 +974,7 @@ namespace emitters
         /// <param name="beginValue"> The starting value of the loop iterator. </param>
         /// <param name="endValue"> The ending value of the loop iterator. </param>
         /// <param name="body"> A function that emits the body of the loop. </param>
-        void For(size_t beginValue, size_t endValue, ForLoopBodyFunction body);
+        void For(int beginValue, int endValue, ForLoopBodyFunction body);
 
         /// <summary> Emits a for loop counting from a begin value up to (but not including) a constant end value. </summary>
         ///
@@ -892,7 +989,7 @@ namespace emitters
         /// <param name="endValue"> The ending value of the loop iterator. </param>
         /// <param name="increment"> The increment for the iterator. </param>
         /// <param name="body"> A function that emits the body of the loop. </param>
-        void For(size_t beginValue, size_t endValue, size_t increment, ForLoopBodyFunction body);
+        void For(int beginValue, int endValue, int increment, ForLoopBodyFunction body);
 
         /// <summary> Emits a for loop counting from a begin value up to (but not including) a constant end value with a given increment. </summary>
         ///
@@ -901,6 +998,96 @@ namespace emitters
         /// <param name="increment"> The increment for the iterator. </param>
         /// <param name="body"> A function that emits the body of the loop. </param>
         void For(llvm::Value* beginValue, llvm::Value* endValue, llvm::Value* increment, ForLoopBodyFunction body);
+
+        //
+        // Extended for loops
+        //
+
+        /// <summary> Emits a set of nested for loops, each counting from a begin value up to (but not including) an end value. </summary>
+        ///
+        /// <param name="ranges"> The range objects describing the ranges to iterate over (begin, end). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(const std::vector<ConstLoopRange>& ranges, MultiDimForLoopBodyFunction body);
+
+        /// <summary> Emits a set of nested for loops, each counting from a begin value up to (but not including) an end value. </summary>
+        ///
+        /// <param name="ranges"> The range objects describing the ranges to iterate over (begin, end). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(const std::vector<LoopRange>& ranges, MultiDimForLoopBodyFunction body);
+
+        /// <summary> Emits a tiled for loop counting from a begin value up to (but not including) an end value with a given increment. </summary>
+        ///
+        /// <param name="range"> The range object describing the range to iterate over (begin, end, and increment). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(ConstTiledLoopRange range, TiledForLoopBodyFunction body);
+
+        /// <summary> Emits a tiled for loop counting from a begin value up to (but not including) an end value with a given increment. </summary>
+        ///
+        /// <param name="range"> The range object describing the range to iterate over (begin, end, and increment). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(TiledLoopRange range, TiledForLoopBodyFunction body);
+
+        /// <summary> Emits a set of nested tiled for loops, each counting from a begin value up to (but not including) an end value, with a given increment. </summary>
+        ///
+        /// <param name="ranges"> The range objects describing the ranges to iterate over (begin, end, increment). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(const std::vector<ConstTiledLoopRange>& ranges, TiledMultiDimForLoopBodyFunction body);
+
+        /// <summary> Emits a set of nested tiled for loops, each counting from a begin value up to (but not including) an end value, with a given increment. </summary>
+        ///
+        /// <param name="ranges"> The range objects describing the ranges to iterate over (begin, end, increment). </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void For(const std::vector<TiledLoopRange>& ranges, TiledMultiDimForLoopBodyFunction body);
+
+        /// <summary> Emits a parallel for loop counting from zero to a constant end value. </summary>
+        ///
+        /// <param name="count"> The number of iterations to make. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(int count, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
+
+        /// <summary> Emits a parallel for loop counting from zero to a constant end value. </summary>
+        ///
+        /// <param name="count"> The number of iterations to make. </param>
+        /// <param name="options"> The options used to modify how the loop is emitted. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(int count, const ParallelLoopOptions& options, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
+
+        /// <summary> Emits a for loop counting from a begin value up to (but not including) a constant end value with a given increment. </summary>
+        ///
+        /// <param name="beginValue"> The starting value of the loop iterator. </param>
+        /// <param name="endValue"> The ending value of the loop iterator. </param>
+        /// <param name="increment"> The increment for the iterator. </param>
+        /// <param name="options"> The options used to modify how the loop is emitted. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(int beginValue, int endValue, int increment, const ParallelLoopOptions& options, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
+
+        /// <summary> Emits a parallel for loop counting from zero to a constant end value. </summary>
+        ///
+        /// <param name="count"> The number of iterations to make. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(llvm::Value* count, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
+
+        /// <summary> Emits a parallel for loop counting from zero to a constant end value. </summary>
+        ///
+        /// <param name="count"> The number of iterations to make. </param>
+        /// <param name="numTasks"> The number of tasks (chunks) to split the loop into. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(llvm::Value* count, const ParallelLoopOptions& options, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
+
+        /// <summary> Emits a for loop counting from a begin value up to (but not including) a constant end value with a given increment. </summary>
+        ///
+        /// <param name="beginValue"> The starting value of the loop iterator. </param>
+        /// <param name="endValue"> The ending value of the loop iterator. </param>
+        /// <param name="increment"> The increment for the iterator. </param>
+        /// <param name="options"> The options used to modify how the loop is emitted. </param>
+        /// <param name="capturedValues"> A list of values to be used inside the loop. </param>
+        /// <param name="body"> A function that emits the body of the loop. </param>
+        void ParallelFor(llvm::Value* beginValue, llvm::Value* endValue, llvm::Value* increment, const ParallelLoopOptions& options, const std::vector<llvm::Value*>& capturedValues, ParallelForLoopBodyFunction body);
 
         /// <summary> Emits a while loop. </summary>
         ///
@@ -912,35 +1099,40 @@ namespace emitters
         ///
         /// <param name="pTestValuePointer"> Pointer to a memory location that will be dereferenced for the test value. </param>
         /// <param name="body"> A function that emits the body of the "if true" block. </param>
+        ///
+        /// <returns> 
+        ///    An IRIfEmitter, used to allow chaining of ElseIf() and Else() calls. The typical pattern is to _not_ assign
+        ///    the return value of `If()` to a variable, but to let the destructor automatically end the if block at the end of the statement.
+        /// </returns>
         IRIfEmitter If(llvm::Value* pTestValuePointer, IfElseBodyFunction body);
 
-        //
-        // Deprecated loop emitter functions
-        //
-
-        /// <summary> Gets a for loop emitter. </summary>
+        /// <summary> Emits an if statement. </summary>
         ///
-        /// <returns> A for loop emitter. </returns>
-        IRForLoopEmitter ForLoop();
-
-        /// <summary> Gets a while loop emitter. </summary>
+        /// <param name="comparison"> A comparison function. </param>
+        /// <param name="body"> A function that emits the body of the "if true" block. </param>
         ///
-        /// <returns> A while loop emitter. </returns>
-        IRWhileLoopEmitter WhileLoop();
-
-        /// <summary> Gets an if statement emitter. </summary>
-        ///
-        /// <returns> An if statement emitter. </returns>
-        IRIfEmitter If();
+        /// <returns> 
+        ///    An IRIfEmitter, used to allow chaining of ElseIf() and Else() calls. The typical pattern is to _not_ assign
+        ///    the return value of `If()` to a variable, but to let the destructor automatically end the if block at the end of the statement.
+        /// </returns>
+        IRIfEmitter If(std::function<llvm::Value*()> comparison, IfElseBodyFunction body);
 
         /// <summary> Gets an if statement emitter. </summary>
         ///
         /// <param name="comparison"> The if-statement comparison. </param>
         /// <param name="pValue"> Pointer to the value used in the comparison. </param>
         /// <param name="pTestValue"> Pointer to the test value that is compared against pValue. </param>
+        /// <param name="body"> A function that emits the body of the "if true" block. </param>
         ///
-        /// <returns> An IRIfEmitter. </returns>
-        IRIfEmitter If(TypedComparison comparison, llvm::Value* pValue, llvm::Value* pTestValue);
+        /// <returns> 
+        ///    An IRIfEmitter, used to allow chaining of ElseIf() and Else() calls. The typical pattern is to _not_ assign
+        ///    the return value of `If()` to a variable, but to let the destructor automatically end the if block at the end of the statement.
+        /// </returns>
+        IRIfEmitter If(TypedComparison comparison, llvm::Value* pValue, llvm::Value* pTestValue, IfElseBodyFunction body);
+
+        //
+        // Async tasks
+        //
 
         /// <summary> Creates an asynchronous task on a new thread. </summary>
         ///
@@ -999,6 +1191,22 @@ namespace emitters
         ///
         /// <returns> Pointer to the llvm::Value that points to the allocated memory. </returns>
         llvm::Value* Malloc(VariableType type, int64_t size);
+
+        /// <summary> Emits a malloc call. </summary>
+        ///
+        /// <param name="type"> The type being allocated. </param>
+        /// <param name="size"> The size being allocated. </param>
+        ///
+        /// <returns> Pointer to the llvm::Value that points to the allocated memory. </returns>
+        llvm::Value* Malloc(llvm::Type* type, int64_t size);
+
+        /// <summary> Emits a malloc call. </summary>
+        ///
+        /// <param name="type"> The type being allocated. </param>
+        /// <param name="size"> The size being allocated. </param>
+        ///
+        /// <returns> Pointer to the llvm::Value that points to the allocated memory. </returns>
+        llvm::Value* Malloc(llvm::Type* type, llvm::Value* size);
 
         /// <summary> Emits a malloc call. </summary>
         ///
@@ -1150,13 +1358,10 @@ namespace emitters
         // Optimizations
         //
 
-        /// <summary> Performs standard optimization passes. </summary>
-        void Optimize();
-
         /// <summary> Applies an optimizer. </summary>
         ///
         /// <param name="optimizer"> The optimizer to apply. </param>
-        void Optimize(IRFunctionOptimizer& optimizer);
+        void Optimize(IROptimizer& optimizer);
 
         //
         // Inline common code generators
@@ -1396,11 +1601,11 @@ namespace emitters
         void IncludeInSwigInterface();
 
     private:
+        friend class IRModuleEmitter;
+        
         IRFunctionEmitter(IRModuleEmitter* pModule, IREmitter* pEmitter, llvm::Function* pFunction, const std::string& name);
         IRFunctionEmitter(IRModuleEmitter* pModule, IREmitter* pEmitter, llvm::Function* pFunction, const NamedVariableTypeList& arguments, const std::string& name);
         IRFunctionEmitter(IRModuleEmitter* pModule, IREmitter* pEmitter, llvm::Function* pFunction, const NamedLLVMTypeList& arguments, const std::string& name);
-
-        friend class IRModuleEmitter;
 
         class EntryBlockScope
         {
@@ -1425,15 +1630,12 @@ namespace emitters
         llvm::Value* ValueAtH(llvm::Value* pPointer, llvm::Value* pOffset);
         llvm::Value* SetValueAtH(llvm::Value* pPointer, int offset, llvm::Value* pValue);
 
-        friend class IRModuleEmitter;
-
         llvm::BasicBlock* GetEntryBlock() { return _entryBlock; }
         void SetUpFunction();
 
         template <typename ArgsListType>
         void RegisterFunctionArgs(const ArgsListType& args);
-        void CompleteFunction(bool optimize = true);
-        void CompleteFunction(IRFunctionOptimizer& optimizer);
+        void CompleteFunction();
 
         bool CanUseBlas() const;
         void EnsurePrintf();
@@ -1442,7 +1644,7 @@ namespace emitters
         llvm::Module* GetLLVMModule() { return _pFunction->getParent(); }
         friend void swap(IRFunctionEmitter& first, IRFunctionEmitter& second);
 
-        IRVariableTable _locals; // Symbol table: name -> llvm::Value* (stack variables or function arguments)
+        IRValueTable _locals; // Symbol table: name -> llvm::Value* (stack variables or function arguments)
 
         IRModuleEmitter* _pModuleEmitter = nullptr;
         IREmitter* _pEmitter = nullptr;

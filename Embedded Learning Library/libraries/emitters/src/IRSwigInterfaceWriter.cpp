@@ -59,13 +59,14 @@ namespace emitters
             }
         };
 
-        // Writes SWIG interfaces for predict
+        // Writes SWIG C++ interfaces for predict that take std::vectors for output.
         class PredictInterfaceWriter
         {
         public:
             PredictInterfaceWriter(IRModuleEmitter& moduleEmitter, llvm::Function& predictFunction)
                 : _function(&predictFunction)
             {
+                _resetFunctionName = moduleEmitter.GetModuleName() + "_Reset";
                 InitPredictFunctionInfo();
             }
 
@@ -93,6 +94,7 @@ namespace emitters
                 // clang-format on
 
                 ReplaceDelimiter(predictFunctionCode, "FUNCTION", _functionName);
+                ReplaceDelimiter(predictFunctionCode, "RESETFUNCTION", _resetFunctionName);
                 ReplaceDelimiter(predictFunctionCode, "INPUT_TYPE", inputType);
                 ReplaceDelimiter(predictFunctionCode, "INPUT_ARGUMENT", inputArgument);
                 ReplaceDelimiter(predictFunctionCode, "OUTPUT_TYPE", _outputType);
@@ -111,6 +113,7 @@ namespace emitters
                 // clang-format on
 
                 ReplaceDelimiter(predictPythonCode, "PREDICT_FUNCTION", _functionName);
+                ReplaceDelimiter(predictPythonCode, "RESET_FUNCTION", _resetFunctionName);
                 ReplaceDelimiter(predictPythonCode, "OUTPUT_VECTOR_TYPE", AsVectorType(_outputType));
 
                 os << "%pythoncode %{\n"
@@ -123,8 +126,10 @@ namespace emitters
             {
                 _functionName = _function->getName();
 
-                // Two arguments (input may be a scalar or pointer)
-                auto it = _function->args().begin();
+                // Three arguments context, input, output (input may be a scalar or pointer)
+                auto it = _function->args().begin();                
+                ++it; // skip context argument
+
                 {
                     std::ostringstream os;
                     auto& argument = *it;
@@ -150,6 +155,7 @@ namespace emitters
             }
 
             std::string _functionName;
+            std::string _resetFunctionName;
             std::string _inputType;
             std::string _outputType;
             bool _inputIsScalar;
@@ -166,6 +172,7 @@ namespace emitters
             {
                 _moduleName = moduleEmitter.GetLLVMModule()->getName();
                 _className = _moduleName + "_Predictor";
+                _resetFunctionName = _moduleName + "_Reset";
             }
 
             virtual ~SteppablePredictorInterfaceWriter() = default;
@@ -229,6 +236,7 @@ namespace emitters
                 ReplaceDelimiter(pythonCode, "MODULE", _moduleName);
                 ReplaceDelimiter(pythonCode, "PREDICTOR_CLASS", _className);
                 ReplaceDelimiter(pythonCode, "PREDICT_FUNCTION", _predictFunctionName);
+                ReplaceDelimiter(pythonCode, "RESET_FUNCTION", _resetFunctionName);
                 ReplaceDelimiter(pythonCode, "PREDICT_FUNCTION_PY", AsPythonMethod(_predictFunctionName));
 
                 ReplaceDelimiter(pythonCode, "LAG_CALLBACK", AsPythonMethod(_callbacks.lagNotifications[0].functionName));
@@ -262,6 +270,7 @@ namespace emitters
             }
 
             std::string _predictFunctionName;
+            std::string _resetFunctionName;
             std::string _moduleName;
             std::string _className;
             ModuleCallbackDefinitions _callbacks;

@@ -1,16 +1,19 @@
-#!/bin/sh
+#!/bin/bash
 
 # A script that creates a compiled profiler in a subdirectory:
 #   - create subdirectory (w/name of model)
 #   - run compile on model and save model .h and .o to subdirectory
 #   - copy c++ and cmake files to subdirectory
 
-# Usage: make_profiler.sh model_file.ell [output_directory] <compile options> 
+# Usage: make_profiler.sh model_file.ell [output_directory] <compile options>
+#
+# Note: currently this script must be run from the ELL build directory, and the model file must reside in the ELL build directory
 
 set -e
 
-pushd .
+script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+pushd .
 # Capture all arguments into a bash array
 all_args=("$@")
 
@@ -56,17 +59,25 @@ if [ ${next_opt:0:1} != '-' ] ; then
 fi
 
 # Platform-specific options
+compile_opts=""
 generic_llc_opts="-relocation-model=pic"
 pi3_llc_opts="-relocation-model=pic -mtriple=armv7-linux-gnueabihf -mcpu=cortex-a53"
+pi0_llc_opts="-relocation-model=pic -mtriple=arm-linux-gnueabihf -mcpu=arm1176jzf-s"
 llc_opts=$generic_llc_opts
 if [ ${target} == 'pi3' ] ; then
     llc_opts=$pi3_llc_opts
 fi
+if [ ${target} == 'pi0' ] ; then
+    llc_opts=$pi0_llc_opts
+fi
+if [ ${target} == 'host' ] ; then
+    compile_opts="--positionIndependentCode"
+fi
 
 echo "Compiling model profilers to ${profiler_directory}"
 mkdir -p $profiler_directory
-@COMPILE_EXECUTABLE@ $model_option $model_file --profile --ir --objectCode --header -od $profiler_directory -ob compiled_model $@
-@COMPILE_EXECUTABLE@ $model_option $model_file --ir --objectCode --header -od $profiler_directory -ob compiled_model_noprofile $@
+@COMPILE_EXECUTABLE@ $model_option $model_file --profile --ir --objectCode $compile_opts --header -od $profiler_directory -ob compiled_model $@
+@COMPILE_EXECUTABLE@ $model_option $model_file --ir --objectCode $compile_opts --header -od $profiler_directory -ob compiled_model_noprofile $@
 
 cd $profiler_directory
 @OPT_EXECUTABLE@ compiled_model.ll -o compiled_model_opt.ll -O3 -S
@@ -75,17 +86,17 @@ cd $profiler_directory
 @OPT_EXECUTABLE@ compiled_model_noprofile.ll -o compiled_model_noprofile_opt.ll -O3 -S
 @LLC_EXECUTABLE@ compiled_model_noprofile_opt.ll -o compiled_model_noprofile_opt.o -O3 --filetype=obj $llc_opts
 
-rm -f *.ll
-
-cp ../tools/utilities/profile/CompiledProfile_main.cpp .
-cp ../tools/utilities/profile/CompiledExerciseModel_main.cpp .
-cp ../tools/utilities/profile/OpenBLASSetup.cmake .
-cp ../tools/utilities/profile/build_and_run.sh .
+cp ${script_dir}/../tools/utilities/profile/CompiledProfile_main.cpp .
+cp ${script_dir}/../tools/utilities/profile/CompiledExerciseModel_main.cpp .
+cp ${script_dir}/../tools/utilities/profile/ProfileReport.h .
+cp ${script_dir}/../tools/utilities/profile/ProfileReport.cpp .
+cp ${script_dir}/../tools/utilities/profile/OpenBLASSetup.cmake .
+cp ${script_dir}/../tools/utilities/profile/build_and_run.sh .
 
 if [ ${parallel} == "true" ] ; then
-    cp ../tools/utilities/profile/CMakeLists-device-parallel.txt.in ./CMakeLists.txt
+    cp ${script_dir}/../tools/utilities/profile/CMakeLists-device-parallel.txt.in ./CMakeLists.txt
 else
-    cp ../tools/utilities/profile/CMakeLists-device.txt.in ./CMakeLists.txt
+    cp ${script_dir}/../tools/utilities/profile/CMakeLists-device.txt.in ./CMakeLists.txt
 fi
 
 if [ ${cleanup} == "true" ] ; then

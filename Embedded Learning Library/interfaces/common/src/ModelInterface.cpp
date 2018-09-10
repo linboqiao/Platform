@@ -6,9 +6,9 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "ModelInterface.h"
 #include "DatasetInterface.h"
 #include "DatasetInterfaceImpl.h"
+#include "ModelInterface.h"
 
 // common
 #include "LoadModel.h"
@@ -21,8 +21,8 @@
 #include "JsonArchiver.h"
 
 // math
-#include "FilterBank.h"
 #include "DenseDataVector.h"
+#include "FilterBank.h"
 
 // model
 #include "InputNode.h"
@@ -34,15 +34,23 @@
 #include "BinaryOperationNode.h"
 #include "BufferNode.h"
 #include "ClockNode.h"
+#include "ConcatenationNode.h"
 #include "DCTNode.h"
 #include "FFTNode.h"
 #include "FilterBankNode.h"
+#include "GRULayerNode.h"
 #include "HammingWindowNode.h"
 #include "IIRFilterNode.h"
 #include "InputNodeBase.h"
 #include "NeuralNetworkPredictorNode.h"
+#include "ReorderDataNode.h"
 #include "Tensor.h"
+#include "TypeCastNode.h"
 #include "UnaryOperationNode.h"
+#include "VoiceActivityDetectorNode.h"
+
+// stl
+#include <algorithm>
 
 //
 // Callback functions
@@ -54,24 +62,31 @@ extern "C" {
 
 // Note: this currently assumes that there is just 1 source and 1 sink in the map
 // Future: extend this to route to multiple sources + sinks based on extra context parameter.
-bool model_CompiledMap_SourceCallback_Double(double* input)
+bool model_CompiledMap_SourceCallback_Double(void* context, double* input)
 {
-    return ELL_API::CompiledMap::InvokeSourceCallback(input);
+    // Note: this context is passed through by IRCompiledMap::SetNodeInput where it calls GetContext()
+    // for the first parameter to the compiled _computeInputFunction and SetContext() happens in
+    // CompiledMap::Step so we know the context is the CompiledMap interface object.
+    auto map = reinterpret_cast<ELL_API::CompiledMap*>(context);
+    return map->InvokeSourceCallback(input);
 }
 
-bool model_CompiledMap_SourceCallback_Float(float* input)
+bool model_CompiledMap_SourceCallback_Float(void* context, float* input)
 {
-    return ELL_API::CompiledMap::InvokeSourceCallback(input);
+    auto map = reinterpret_cast<ELL_API::CompiledMap*>(context);
+    return map->InvokeSourceCallback(input);
 }
 
-void model_CompiledMap_SinkCallback_Double(double* output)
+void model_CompiledMap_SinkCallback_Double(void* context, double* output)
 {
-    ELL_API::CompiledMap::InvokeSinkCallback(output);
+    auto map = reinterpret_cast<ELL_API::CompiledMap*>(context);
+    return map->InvokeSinkCallback(output);
 }
 
-void model_CompiledMap_SinkCallback_Float(float* output)
+void model_CompiledMap_SinkCallback_Float(void* context, float* output)
 {
-    ELL_API::CompiledMap::InvokeSinkCallback(output);
+    auto map = reinterpret_cast<ELL_API::CompiledMap*>(context);
+    return map->InvokeSinkCallback(output);
 }
 
 #ifdef __cplusplus
@@ -86,7 +101,25 @@ namespace
     template <typename OutputType, typename InputType>
     std::vector<OutputType> CastVector(const std::vector<InputType>& vector)
     {
-        return { vector.begin(), vector.end() };
+        std::vector<OutputType> result;
+        result.reserve(vector.size());
+        std::transform(vector.begin(), vector.end(), std::back_inserter(result), [](InputType x) { return static_cast<OutputType>(x); });
+        return result;
+    }
+
+    template <typename OutputType, typename InputType>
+    std::vector<std::vector<OutputType>> CastVector(const std::vector<std::vector<InputType>>& vector)
+    {
+        std::vector<std::vector<OutputType>> result;
+        result.reserve(vector.size());
+        for (const auto& row : vector)
+        {
+            std::vector<OutputType> outRow;
+            outRow.reserve(row.size());
+            std::transform(row.begin(), row.end(), std::back_inserter(outRow), [](InputType x) { return static_cast<OutputType>(x); });
+            result.push_back(outRow);
+        }
+        return result;
     }
 }
 
@@ -300,6 +333,22 @@ std::string Node::GetRuntimeTypeName()
     return _node->GetRuntimeTypeName();
 }
 
+std::string Node::GetMetadataValue(const std::string& key)
+{
+    std::string value;
+    if (_node->GetMetadata().HasEntry(key))
+    {
+        value = _node->GetMetadata().GetEntry<std::string>(key);
+    }
+    return value;
+}
+
+void Node::SetMetadataValue(const std::string& key, const std::string& value)
+{
+    auto node = const_cast<ell::model::Node*>(_node);
+    node->GetMetadata()[key] = value;
+}
+
 //
 // InputNode
 //
@@ -408,6 +457,11 @@ int PortElements::Size() const
     return _elements.Size();
 }
 
+PortMemoryLayout PortElements::GetMemoryLayout() const
+{
+    return _elements.GetMemoryLayout();
+}
+
 PortType PortElements::GetType() const
 {
     return static_cast<PortType>(_elements.GetPortType());
@@ -441,9 +495,14 @@ Node InputPort::GetNode()
     return Node(_port->GetNode());
 }
 
-int InputPort::Size()
+int InputPort::Size() const
 {
     return (int)_port->Size();
+}
+
+PortMemoryLayout InputPort::GetMemoryLayout() const
+{
+    return { _port->GetMemoryLayout() };
 }
 
 std::string InputPort::GetName()
@@ -499,9 +558,14 @@ Node OutputPort::GetNode()
     return Node(_port->GetNode());
 }
 
-int OutputPort::Size()
+int OutputPort::Size() const
 {
     return (int)_port->Size();
+}
+
+PortMemoryLayout OutputPort::GetMemoryLayout() const
+{
+    return { _port->GetMemoryLayout() };
 }
 
 std::string OutputPort::GetName()
@@ -512,6 +576,35 @@ std::string OutputPort::GetName()
 void OutputPort::ReferencePort()
 {
     _port->ReferencePort();
+}
+
+//
+// PortMemoryLayout
+//
+PortMemoryLayout::PortMemoryLayout(const std::vector<int>& s, const std::vector<int>& p, const std::vector<int>& o, const std::vector<int>& order)
+    : size(s), padding(p), offset(o), order(order)
+{
+    if (padding.size() == 0 && offset.size() == 0)
+    {
+        _layout = ell::model::PortMemoryLayout(ell::model::MemoryShape{ size });
+    }
+    else if (offset.size() == 0)
+    {
+        _layout = ell::model::PortMemoryLayout(ell::model::MemoryShape{ size }, ell::model::MemoryShape{ padding });
+    }
+    else if (order.size() == 0)
+    {
+        _layout = ell::model::PortMemoryLayout(ell::model::MemoryShape{ size }, ell::model::MemoryShape{ padding }, ell::model::MemoryShape{ offset });
+    }
+    else
+    {
+        _layout = ell::model::PortMemoryLayout(ell::model::MemoryShape{ size }, ell::model::MemoryShape{ padding }, ell::model::MemoryShape{ offset }, ell::model::DimensionOrder{ order });
+    }
+}
+
+PortMemoryLayout::PortMemoryLayout(const ell::model::PortMemoryLayout& layout)
+    : _layout(layout)
+{
 }
 
 //
@@ -622,16 +715,16 @@ InputNode ModelBuilder::AddInputNode(Model model, const ell::api::math::TensorSh
     switch (type)
     {
     case PortType::boolean:
-        newNode = model.GetModel().AddNode<ell::model::InputNode<bool>>(tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::InputNode<bool>>(tensorShape.ToMemoryShape());
         break;
     case PortType::integer:
-        newNode = model.GetModel().AddNode<ell::model::InputNode<int>>(tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::InputNode<int>>(tensorShape.ToMemoryShape());
         break;
     case PortType::real:
-        newNode = model.GetModel().AddNode<ell::model::InputNode<double>>(tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::InputNode<double>>(tensorShape.ToMemoryShape());
         break;
     case PortType::smallReal:
-        newNode = model.GetModel().AddNode<ell::model::InputNode<float>>(tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::InputNode<float>>(tensorShape.ToMemoryShape());
         break;
     default:
         throw std::invalid_argument("Error: could not create InputNode of the requested type");
@@ -647,16 +740,16 @@ OutputNode ModelBuilder::AddOutputNode(Model model, const ell::api::math::Tensor
     switch (type)
     {
     case PortType::boolean:
-        newNode = model.GetModel().AddNode<ell::model::OutputNode<bool>>(ell::model::PortElements<bool>(elements), tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::OutputNode<bool>>(ell::model::PortElements<bool>(elements), tensorShape.ToMemoryShape());
         break;
     case PortType::integer:
-        newNode = model.GetModel().AddNode<ell::model::OutputNode<int>>(ell::model::PortElements<int>(elements), tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::OutputNode<int>>(ell::model::PortElements<int>(elements), tensorShape.ToMemoryShape());
         break;
     case PortType::real:
-        newNode = model.GetModel().AddNode<ell::model::OutputNode<double>>(ell::model::PortElements<double>(elements), tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::OutputNode<double>>(ell::model::PortElements<double>(elements), tensorShape.ToMemoryShape());
         break;
     case PortType::smallReal:
-        newNode = model.GetModel().AddNode<ell::model::OutputNode<float>>(ell::model::PortElements<float>(elements), tensorShape.ToMathTensorShape());
+        newNode = model.GetModel().AddNode<ell::model::OutputNode<float>>(ell::model::PortElements<float>(elements), tensorShape.ToMemoryShape());
         break;
     default:
         throw std::invalid_argument("Error: could not create OutputNode of the requested type");
@@ -675,6 +768,161 @@ Node ModelBuilder::AddClockNode(Model model, PortElements input, double interval
     return Node(newNode);
 }
 
+Node ModelBuilder::AddTypeCastNode(Model model, PortElements input, PortType outputType)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+    switch (input.GetType())
+    {
+    case PortType::integer:
+        switch (outputType)
+        {
+        case PortType::integer:
+            throw std::invalid_argument("Error: CastNode from int to int is redundant");
+        case PortType::real:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<int, double>>(ell::model::PortElements<int>(elements));
+            break;
+        case PortType::smallReal:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<int, float>>(ell::model::PortElements<int>(elements));
+            break;
+        case PortType::boolean:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<int, bool>>(ell::model::PortElements<int>(elements));
+            break;
+        default:
+            throw std::invalid_argument("Error: CastNode unknown output type");
+        }
+        break;
+    case PortType::real:
+        switch (outputType)
+        {
+        case PortType::integer:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<double, int>>(ell::model::PortElements<double>(elements));
+            break;
+        case PortType::real:
+            throw std::invalid_argument("Error: CastNode from real to real is redundant");
+        case PortType::smallReal:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<double, float>>(ell::model::PortElements<double>(elements));
+            break;
+        case PortType::boolean:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<double, bool>>(ell::model::PortElements<double>(elements));
+            break;
+        default:
+            throw std::invalid_argument("Error: CastNode unknown output type");
+        }
+        break;
+    case PortType::smallReal:
+        switch (outputType)
+        {
+        case PortType::integer:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<float, int>>(ell::model::PortElements<float>(elements));
+            break;
+        case PortType::real:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<float, double>>(ell::model::PortElements<float>(elements));
+            break;
+        case PortType::smallReal:
+            throw std::invalid_argument("Error: CastNode from smallReal to smallReal is redundant");
+        case PortType::boolean:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<float, bool>>(ell::model::PortElements<float>(elements));
+            break;
+        default:
+            throw std::invalid_argument("Error: CastNode unknown output type");
+        }
+        break;
+    case PortType::boolean:
+        switch (outputType)
+        {
+        case PortType::integer:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<bool, int>>(ell::model::PortElements<bool>(elements));
+            break;
+        case PortType::real:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<bool, double>>(ell::model::PortElements<bool>(elements));
+            break;
+        case PortType::smallReal:
+            newNode = model.GetModel().AddNode<ell::nodes::TypeCastNode<bool, float>>(ell::model::PortElements<bool>(elements));
+            break;
+        case PortType::boolean:
+            throw std::invalid_argument("Error: CastNode from boolean to boolean is redundant");
+            break;
+        default:
+            throw std::invalid_argument("Error: CastNode unknown output type");
+        }
+        break;
+    default:
+        throw std::invalid_argument("Error: CastNode unknown input type");
+    }
+    return Node(newNode);
+}
+
+template <typename ElementType>
+ell::model::PortElements<ElementType> GetPortElementsFromList(const std::vector<PortElements*>& inputs)
+{
+    auto elements_list = std::vector<ell::model::PortElements<ElementType>>{};
+    for (const auto input : inputs)
+    {
+        const auto& elements = input->GetPortElements();
+        elements_list.push_back(ell::model::PortElements<ElementType>(elements));
+    }
+    return ell::model::PortElements<ElementType>(elements_list);
+}
+
+Node ModelBuilder::AddConcatenationNode(Model model, const ell::api::math::TensorShape& outputShape, const std::vector<PortElements*>& inputs)
+{
+    if (inputs.size() < 1)
+    {
+        throw std::invalid_argument("Error: expected at least one input port element for AddConcatenationNode");
+    }
+    auto type = inputs[0]->GetType();
+    ell::model::Node* newNode = nullptr;
+
+    switch (type)
+    {
+    case PortType::boolean:
+        newNode = model.GetModel().AddNode<ell::nodes::ConcatenationNode<bool>>(GetPortElementsFromList<bool>(inputs), outputShape.ToMemoryShape());
+        break;
+    case PortType::integer:
+        newNode = model.GetModel().AddNode<ell::nodes::ConcatenationNode<int>>(GetPortElementsFromList<int>(inputs), outputShape.ToMemoryShape());
+        break;
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::ConcatenationNode<double>>(GetPortElementsFromList<double>(inputs), outputShape.ToMemoryShape());
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::ConcatenationNode<float>>(GetPortElementsFromList<float>(inputs), outputShape.ToMemoryShape());
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create ConcatenationNode of the requested type");
+    }
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddReorderDataNode(Model model, PortElements input, PortMemoryLayout inputMemoryLayout, PortMemoryLayout outputMemoryLayout, std::vector<int> order, double outputPaddingValue)
+{
+    auto type = input.GetType();
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+    switch (type)
+    {
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::ReorderDataNode<double>>(
+            ell::model::PortElements<double>(elements),
+            inputMemoryLayout.Get(),
+            outputMemoryLayout.Get(),
+            order,
+            outputPaddingValue);
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::ReorderDataNode<float>>(
+            ell::model::PortElements<float>(elements),
+            inputMemoryLayout.Get(),
+            outputMemoryLayout.Get(),
+            order,
+            static_cast<float>(outputPaddingValue));
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create ReorderDataNode of the requested type");
+    }
+    return Node(newNode);
+}
+
 Node ModelBuilder::AddSinkNode(Model model, PortElements input, PortElements trigger, const ell::api::math::TensorShape& tensorShape, const std::string& sinkFunctionName)
 {
     auto type = input.GetType();
@@ -687,14 +935,14 @@ Node ModelBuilder::AddSinkNode(Model model, PortElements input, PortElements tri
         newNode = model.GetModel().AddNode<ell::nodes::SinkNode<double>>(
             ell::model::PortElements<double>(elements),
             ell::model::PortElements<bool>(triggerElements),
-            tensorShape.ToMathTensorShape(),
+            tensorShape.ToMemoryShape(),
             sinkFunctionName);
         break;
     case PortType::smallReal:
         newNode = model.GetModel().AddNode<ell::nodes::SinkNode<float>>(
             ell::model::PortElements<float>(elements),
             ell::model::PortElements<bool>(triggerElements),
-            tensorShape.ToMathTensorShape(),
+            tensorShape.ToMemoryShape(),
             sinkFunctionName);
         break;
     default:
@@ -719,11 +967,11 @@ Node ModelBuilder::AddSourceNode(Model model, PortElements input, PortType outpu
     {
     case PortType::real:
         newNode = model.GetModel().AddNode<ell::nodes::SourceNode<double>>(
-            ell::model::PortElements<TimeTickType>(inputElements), tensorShape.ToMathTensorShape(), sourceFunctionName);
+            ell::model::PortElements<TimeTickType>(inputElements), tensorShape.ToMemoryShape(), sourceFunctionName);
         break;
     case PortType::smallReal:
         newNode = model.GetModel().AddNode<ell::nodes::SourceNode<float>>(
-            ell::model::PortElements<TimeTickType>(inputElements), tensorShape.ToMathTensorShape(), sourceFunctionName);
+            ell::model::PortElements<TimeTickType>(inputElements), tensorShape.ToMemoryShape(), sourceFunctionName);
         break;
     default:
         throw std::invalid_argument("Error: could not create SourceNode of the requested type");
@@ -747,6 +995,30 @@ Node ModelBuilder::AddConstantNode(Model model, std::vector<double> values, Port
         break;
     case PortType::smallReal:
         newNode = model.GetModel().AddNode<ell::nodes::ConstantNode<float>>(CastVector<float>(values));
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create ConstantNode of the requested type");
+    }
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddConstantNode(Model model, std::vector<double> values, const ell::api::math::TensorShape& outputShape, PortType type)
+{
+    auto shape = outputShape.ToMemoryShape();
+    ell::model::Node* newNode = nullptr;
+    switch (type)
+    {
+    case PortType::boolean:
+        newNode = model.GetModel().AddNode<ell::nodes::ConstantNode<bool>>(CastVector<bool>(values), shape);
+        break;
+    case PortType::integer:
+        newNode = model.GetModel().AddNode<ell::nodes::ConstantNode<int>>(CastVector<int>(values), shape);
+        break;
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::ConstantNode<double>>(CastVector<double>(values), shape);
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::ConstantNode<float>>(CastVector<float>(values), shape);
         break;
     default:
         throw std::invalid_argument("Error: could not create ConstantNode of the requested type");
@@ -806,6 +1078,38 @@ Node ModelBuilder::AddBinaryOperationNode(Model model, PortElements input1, Port
         break;
     case PortType::smallReal:
         newNode = model.GetModel().AddNode<ell::nodes::BinaryOperationNode<float>>(ell::model::PortElements<float>(elements1), ell::model::PortElements<float>(elements2), operation);
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create BinaryOperationNode of the requested type");
+    }
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddBinaryOperationNodeWithMemoryLayout(Model model, PortElements input1, PortMemoryLayout input1Layout, PortElements input2, PortMemoryLayout input2Layout, PortMemoryLayout outputLayout, BinaryOperationType op)
+{
+    auto operation = static_cast<ell::emitters::BinaryOperationType>(op);
+
+    auto type = input1.GetType();
+    if (type != input2.GetType())
+    {
+        throw std::invalid_argument("Error: BinaryOperationNode requires both arguments to be of the same type");
+    }
+    auto elements1 = input1.GetPortElements();
+    auto elements2 = input2.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+    switch (type)
+    {
+    case PortType::boolean:
+        newNode = model.GetModel().AddNode<ell::nodes::BinaryOperationNode<bool>>(ell::model::PortElements<bool>(elements1), input1Layout.Get(), ell::model::PortElements<bool>(elements2), input2Layout.Get(), outputLayout.Get(), operation);
+        break;
+    case PortType::integer:
+        newNode = model.GetModel().AddNode<ell::nodes::BinaryOperationNode<int>>(ell::model::PortElements<int>(elements1), input1Layout.Get(), ell::model::PortElements<int>(elements2), input2Layout.Get(), outputLayout.Get(), operation);
+        break;
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::BinaryOperationNode<double>>(ell::model::PortElements<double>(elements1), input1Layout.Get(), ell::model::PortElements<double>(elements2), input2Layout.Get(), outputLayout.Get(), operation);
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::BinaryOperationNode<float>>(ell::model::PortElements<float>(elements1), input1Layout.Get(), ell::model::PortElements<float>(elements2), input2Layout.Get(), outputLayout.Get(), operation);
         break;
     default:
         throw std::invalid_argument("Error: could not create BinaryOperationNode of the requested type");
@@ -958,6 +1262,353 @@ Node ModelBuilder::AddDCTNode(Model model, PortElements input, int numFilters)
     return Node(newNode);
 }
 
+Node ModelBuilder::AddVoiceActivityDetectorNode(Model model, PortElements input, double sampleRate, double frameDuration,
+    double tauUp, double tauDown, double largeInput, double gainAtt, double thresholdUp, double thresholdDown,
+    double levelThreshold)
+{
+    auto type = input.GetType();
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    switch (type)
+    {
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::VoiceActivityDetectorNode<double>>(ell::model::PortElements<double>(elements), sampleRate, 
+            frameDuration, tauUp, tauDown, largeInput, gainAtt, thresholdUp, thresholdDown, levelThreshold);
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::VoiceActivityDetectorNode<float>>(ell::model::PortElements<float>(elements), sampleRate,
+            frameDuration, tauUp, tauDown, largeInput, gainAtt, thresholdUp, thresholdDown, levelThreshold);
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create BufferNode of the requested type");
+    }
+    return Node(newNode);
+}
+
+template <typename ElementType>
+typename ell::predictors::neural::Layer<ElementType>::LayerParameters GetLayerParametersForLayerNode(const ell::api::predictors::neural::Layer<ElementType>& layer)
+{
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<ElementType>::LayerParameters;
+    using TensorType = typename ell::predictors::neural::Layer<ElementType>::TensorType;
+    return UnderlyingLayerParameters{
+        TensorType(static_cast<size_t>(layer.parameters.inputShape.rows), static_cast<size_t>(layer.parameters.inputShape.columns), static_cast<size_t>(layer.parameters.inputShape.channels)),
+        layer.parameters.inputPaddingParameters,
+        { static_cast<size_t>(layer.parameters.outputShape.rows), static_cast<size_t>(layer.parameters.outputShape.columns), static_cast<size_t>(layer.parameters.outputShape.channels) },
+        layer.parameters.outputPaddingParameters,
+    };
+}
+
+Node ModelBuilder::AddFloatActivationLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ActivationLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using TensorType = typename ell::predictors::neural::Layer<float>::TensorType;
+    using namespace ell::predictors;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+
+    switch (layer.activation)
+    {
+    case ell::api::predictors::neural::ActivationType::relu:
+    {
+        auto activationLayer = neural::ActivationLayer<float, neural::ReLUActivation>(parameters);
+        newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::ReLUActivation>>(ell::model::PortElements<float>(elements), activationLayer);
+        break;
+    }
+    case ell::api::predictors::neural::ActivationType::hardSigmoid:
+    {
+        auto activationLayer = neural::ActivationLayer<float, neural::HardSigmoidActivation>(parameters);
+        newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::HardSigmoidActivation>>(ell::model::PortElements<float>(elements), activationLayer);
+        break;
+    }
+    case ell::api::predictors::neural::ActivationType::leaky:
+    {
+        using apiLeakyReLUActivationLayer = typename ell::api::predictors::neural::LeakyReLUActivationLayer<float>;
+        auto* activationlayer = const_cast<ell::api::predictors::neural::ActivationLayer<float>*>(&layer);
+        auto* apiLeakyLayer = dynamic_cast<apiLeakyReLUActivationLayer*>(activationlayer);
+        if (apiLeakyLayer)
+        {
+            float alpha = apiLeakyLayer->_alpha;
+            neural::LeakyReLUActivation<float> leaky(alpha);
+            auto activationLayer = neural::ActivationLayer<float, neural::LeakyReLUActivation>(parameters, leaky);
+            newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::LeakyReLUActivation>>(ell::model::PortElements<float>(elements), activationLayer);
+        }
+        else
+        {
+            auto defaultLeakyLayer = neural::ActivationLayer<float, neural::LeakyReLUActivation>(parameters);
+            newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::LeakyReLUActivation>>(ell::model::PortElements<float>(elements), defaultLeakyLayer);
+        }
+        break;
+    }
+    case ell::api::predictors::neural::ActivationType::sigmoid:
+    {
+        auto activationLayer = neural::ActivationLayer<float, neural::SigmoidActivation>(parameters);
+        newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::SigmoidActivation>>(ell::model::PortElements<float>(elements), activationLayer);
+        break;
+    }
+    case ell::api::predictors::neural::ActivationType::tanh:
+    {
+        auto activationLayer = neural::ActivationLayer<float, neural::TanhActivation>(parameters);
+        newNode = model.GetModel().AddNode<ell::nodes::ActivationLayerNode<float, neural::TanhActivation>>(ell::model::PortElements<float>(elements), activationLayer);
+        break;
+    }
+    case ell::api::predictors::neural::ActivationType::prelu:
+    {
+        using apiPReLUActivationLayer = typename ell::api::predictors::neural::PReLUActivationLayer<float>;
+        auto* activationlayer = const_cast<ell::api::predictors::neural::ActivationLayer<float>*>(&layer);
+        auto& preluApiLayer = activationlayer->template As<apiPReLUActivationLayer>();
+        TensorType alpha(preluApiLayer.alpha.shape.rows, preluApiLayer.alpha.shape.columns, preluApiLayer.alpha.shape.channels, preluApiLayer.alpha.data);
+        neural::ParametricReLUActivation<float> prelu(alpha);
+        auto activationLayer = neural::ActivationLayer<float, neural::ParametricReLUActivation>(parameters, prelu);
+        newNode = model.GetModel().AddNode<ell::nodes::ParametricReLUActivationLayerNode<float>>(ell::model::PortElements<float>(elements), activationLayer);
+        break;
+    }
+    default:
+        throw ell::utilities::InputException(ell::utilities::InputExceptionErrors::invalidArgument, std::string("Encountered unknown activation type in neural network predictor: ") + std::to_string(static_cast<int>(layer.activation)));
+    }
+
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatBatchNormalizationLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BatchNormalizationLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using namespace ell::predictors;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    auto epsilonSummand = (layer.epsilonSummand == ell::api::predictors::neural::EpsilonSummand::variance) ? ell::predictors::neural::EpsilonSummand::Variance : ell::predictors::neural::EpsilonSummand::SqrtVariance;
+
+    ell::predictors::neural::BatchNormalizationLayer<float> batchNormalizationLayer(parameters, layer.mean, layer.variance, layer.epsilon, epsilonSummand);
+
+    newNode = model.GetModel().AddNode<ell::nodes::BatchNormalizationLayerNode<float>>(ell::model::PortElements<float>(elements), batchNormalizationLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatBiasLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BiasLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    ell::predictors::neural::BiasLayer<float> biasLayer(parameters, layer.bias);
+
+    newNode = model.GetModel().AddNode<ell::nodes::BiasLayerNode<float>>(ell::model::PortElements<float>(elements), biasLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatBinaryConvolutionalLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BinaryConvolutionalLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using TensorType = typename ell::predictors::neural::Layer<float>::TensorType;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+
+    TensorType weights(layer.weights.shape.rows, layer.weights.shape.columns, layer.weights.shape.channels, layer.weights.data);
+    ell::predictors::neural::BinaryConvolutionalLayer<float> convolutionalLayer(parameters, layer.convolutionalParameters, weights);
+
+    newNode = model.GetModel().AddNode<ell::nodes::BinaryConvolutionalLayerNode<float>>(ell::model::PortElements<float>(elements), convolutionalLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatConvolutionalLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ConvolutionalLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using TensorType = typename ell::predictors::neural::Layer<float>::TensorType;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+
+    TensorType weights(layer.weights.shape.rows, layer.weights.shape.columns, layer.weights.shape.channels, layer.weights.data);
+    ell::predictors::neural::ConvolutionalLayer<float> convolutionalLayer(parameters, layer.convolutionalParameters, weights);
+
+    newNode = model.GetModel().AddNode<ell::nodes::ConvolutionalLayerNode<float>>(ell::model::PortElements<float>(elements), convolutionalLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatFullyConnectedLayerNode(Model model, PortElements input, const ell::api::predictors::neural::FullyConnectedLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using TensorType = typename ell::predictors::neural::Layer<float>::TensorType;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    TensorType weights(layer.weights.shape.rows, layer.weights.shape.columns, layer.weights.shape.channels, layer.weights.data);
+    ell::predictors::neural::FullyConnectedLayer<float> fullyConnectedLayer(parameters, weights);
+
+    newNode = model.GetModel().AddNode<ell::nodes::FullyConnectedLayerNode<float>>(ell::model::PortElements<float>(elements), fullyConnectedLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatRegionDetectionLayerNode(Model model, PortElements input, const ell::api::predictors::neural::RegionDetectionLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    auto parameters = GetLayerParametersForLayerNode(layer);
+
+    ell::predictors::neural::RegionDetectionLayer<float> regionDetectionLayer(parameters, layer.detectionParameters);
+
+    newNode = model.GetModel().AddNode<ell::nodes::RegionDetectionLayerNode<float>>(ell::model::PortElements<float>(elements), regionDetectionLayer);
+
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatPoolingLayerNode(Model model, PortElements input, const ell::api::predictors::neural::PoolingLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+    using namespace ell::predictors;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    if (layer.poolingType == ell::api::predictors::neural::PoolingType::max)
+    {
+        neural::PoolingLayer<float, neural::MaxPoolingFunction> poolingLayer(parameters, layer.poolingParameters);
+        newNode = model.GetModel().AddNode<ell::nodes::PoolingLayerNode<float, neural::MaxPoolingFunction>>(ell::model::PortElements<float>(elements), poolingLayer);
+    }
+    else
+    {
+        neural::PoolingLayer<float, neural::MeanPoolingFunction> poolingLayer(parameters, layer.poolingParameters);
+        newNode = model.GetModel().AddNode<ell::nodes::PoolingLayerNode<float, neural::MeanPoolingFunction>>(ell::model::PortElements<float>(elements), poolingLayer);
+    }
+
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatScalingLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ScalingLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    ell::predictors::neural::ScalingLayer<float> scalingLayer(parameters, layer.scales);
+
+    newNode = model.GetModel().AddNode<ell::nodes::ScalingLayerNode<float>>(ell::model::PortElements<float>(elements), scalingLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatSoftmaxLayerNode(Model model, PortElements input, const ell::api::predictors::neural::SoftmaxLayer<float>& layer)
+{
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+    ell::predictors::neural::SoftmaxLayer<float> softmaxLayer(parameters);
+
+    newNode = model.GetModel().AddNode<ell::nodes::SoftmaxLayerNode<float>>(ell::model::PortElements<float>(elements), softmaxLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatGRULayerNode(Model model, PortElements input, PortElements reset, const ell::api::predictors::neural::GRULayer<float>& layer)
+{
+    using ElementType = float;
+    using namespace ell::predictors::neural;
+    using namespace ell::nodes;
+
+    auto elements = input.GetPortElements();
+    auto resetElements = reset.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+
+    // Now we can construct the underlying Layer rather than python api version of GRULayer.
+    size_t m = layer.updateWeights.shape.rows;
+    size_t n = layer.updateWeights.shape.columns;
+    GRUParameters<ElementType> gruParameters = { { layer.updateWeights.data.data(), m, n }, { layer.resetWeights.data.data(), m, n }, { layer.hiddenWeights.data.data(), m, n }, { layer.updateBias.data.data(), layer.updateBias.data.size() }, { layer.resetBias.data.data(), layer.resetBias.data.size() }, { layer.hiddenBias.data.data(), layer.hiddenBias.data.size() } };
+    GRULayer<ElementType, TanhActivation, SigmoidActivation> gruLayer(parameters, gruParameters);
+
+    newNode = model.GetModel().AddNode<GRULayerNode<ElementType, TanhActivation, SigmoidActivation>>(ell::model::PortElements<ElementType>(elements), ell::model::PortElements<int>(resetElements), gruLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddFloatLSTMLayerNode(Model model, PortElements input, PortElements reset, const ell::api::predictors::neural::LSTMLayer<float>& layer)
+{
+    using ElementType = float;
+    using namespace ell::predictors::neural;
+    using namespace ell::nodes;
+
+    auto elements = input.GetPortElements();
+    auto resetElements = reset.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+
+    using UnderlyingLayerParameters = typename ell::predictors::neural::Layer<float>::LayerParameters;
+
+    // Set the layer parameters. Note the the input tensor reference will be immediately replaced inside the
+    // layer node's constructor.
+    UnderlyingLayerParameters parameters = GetLayerParametersForLayerNode(layer);
+
+    // Now we can construct the underlying Layer rather than python api version of GRULayer.
+    size_t m = layer.inputWeights.shape.rows;
+    size_t n = layer.inputWeights.shape.columns;
+    size_t s = layer.inputBias.data.size();
+    LSTMParameters<ElementType> lstmParameters = { { layer.inputWeights.data.data(), m, n }, { layer.forgetMeWeights.data.data(), m, n }, { layer.candidateWeights.data.data(), m, n }, { layer.outputWeights.data.data(), m, n }, { layer.inputBias.data.data(), s }, { layer.forgetMeBias.data.data(), s }, { layer.candidateBias.data.data(), s }, { layer.outputBias.data.data(), s } };
+    LSTMLayer<ElementType, TanhActivation, SigmoidActivation> lstmLayer(parameters, lstmParameters);
+
+    newNode = model.GetModel().AddNode<LSTMLayerNode<ElementType, TanhActivation, SigmoidActivation>>(ell::model::PortElements<ElementType>(elements), ell::model::PortElements<int>(resetElements), lstmLayer);
+    return Node(newNode);
+}
+
+Node ModelBuilder::AddDTWNode(Model model, std::vector<std::vector<double>> prototype, PortElements input)
+{
+    auto type = input.GetType();
+    auto elements = input.GetPortElements();
+    ell::model::Node* newNode = nullptr;
+    switch (type)
+    {
+    case PortType::real:
+        newNode = model.GetModel().AddNode<ell::nodes::DTWDistanceNode<double>>(ell::model::PortElements<double>(elements), prototype);
+        break;
+    case PortType::smallReal:
+        newNode = model.GetModel().AddNode<ell::nodes::DTWDistanceNode<float>>(ell::model::PortElements<float>(elements), CastVector<float>(prototype));
+        break;
+    default:
+        throw std::invalid_argument("Error: could not create DCTNode of the requested type");
+    }
+    return Node(newNode);
+}
+
 //
 // Map
 //
@@ -985,12 +1636,12 @@ Map::Map(const std::string& filename)
 
 ell::api::math::TensorShape Map::GetInputShape() const
 {
-    return ell::api::math::TensorShape::FromMathTensorShape(_map->GetInputShape());
+    return ell::api::math::TensorShape::FromMemoryShape(_map->GetInputShape());
 }
 
 ell::api::math::TensorShape Map::GetOutputShape() const
 {
-    return ell::api::math::TensorShape::FromMathTensorShape(_map->GetOutputShape());
+    return ell::api::math::TensorShape::FromMemoryShape(_map->GetOutputShape());
 }
 
 Model Map::GetModel() const
@@ -1004,7 +1655,7 @@ void Map::Load(const std::string& filename)
     ell::common::MapLoadArguments args;
     args.inputMapFilename = filename;
     _map = std::make_shared<ell::model::Map>(ell::common::LoadMap(args));
-    _hasSourceNodes = 0;
+    _sourceNodeState = TriState::Uninitialized;
 }
 
 void Map::Save(const std::string& filename) const
@@ -1012,19 +1663,20 @@ void Map::Save(const std::string& filename) const
     ell::common::SaveMap(*_map, filename);
 }
 
+void Map::Reset()
+{
+    _map->Reset();
+}
+
 bool Map::HasSourceNodes()
 {
-    // the valid values for _hasSourceNodes are:
-    // 0 - means it is unitialized
-    // 1 - means the model does not have any source nodes.
-    // 2 - means the model has source nodes.
-    if (_hasSourceNodes == 0) 
+    if (_sourceNodeState == TriState::Uninitialized)
     {
         // lazily search for SourceNode and cache the answer so next call is much faster.
         auto sourceNodes = _map->GetModel().GetNodesByType<ell::model::SourceNodeBase>();
-        _hasSourceNodes = sourceNodes.empty() ? 1 : 2;
+        _sourceNodeState = sourceNodes.empty() ? TriState::No : TriState::Yes;
     }
-    return _hasSourceNodes == 2;
+    return _sourceNodeState == TriState::Yes;
 }
 
 std::vector<double> Map::ComputeDouble(const AutoDataVector& inputData)
@@ -1087,7 +1739,7 @@ CompiledMap Map::Compile(const std::string& targetDevice,
                          const std::string& functionName,
                          const std::string& sourceFunctionName,
                          const std::string& sinkFunctionName,
-                         const MapCompilerOptions& compilerSettings, 
+                         const MapCompilerOptions& compilerSettings,
                          const ModelOptimizerOptions& optimizerSettings,
                          std::function<void(llvm::Module*, ell::emitters::IRExecutionEngine&)> resolveCallbacks) const
 {
@@ -1108,7 +1760,6 @@ CompiledMap Map::Compile(const std::string& targetDevice,
     {
         resolveCallbacks(module, compiledMap.GetJitter());
     }
-
     return CompiledMap(std::move(compiledMap), GetInputShape(), GetOutputShape());
 }
 
@@ -1137,6 +1788,35 @@ std::string CompiledMap::GetCodeString()
     return s.str();
 }
 
+bool CompiledMap::HasSourceNodes()
+{
+    if (_sourceNodeState == TriState::Uninitialized)
+    {
+        // lazily search for SourceNode and cache the answer so next call is much faster.
+        auto sourceNodes = _map->GetModel().GetNodesByType<ell::model::SourceNodeBase>();
+        _sourceNodeState = sourceNodes.empty() ? TriState::No : TriState::Yes;
+    }
+    return _sourceNodeState == TriState::Yes;
+}
+
+std::vector<double> CompiledMap::ComputeDouble(const std::vector<double>& inputData)
+{
+    if (_map != nullptr)
+    {
+        return _map->Compute<double>(inputData);
+    }
+    return {};
+}
+
+std::vector<float> CompiledMap::ComputeFloat(const std::vector<float>& inputData)
+{
+    if (_map != nullptr)
+    {
+        return _map->Compute<float>(inputData);
+    }
+    return {};
+}
+
 void CompiledMap::WriteIR(const std::string& filePath)
 {
     if (_map != nullptr)
@@ -1163,17 +1843,15 @@ void CompiledMap::WriteSwigInterface(const std::string& filePath)
 
 // Specializations with type-specific static forwarder instances
 template <>
-ell::api::CallbackForwarder<double, double>& CompiledMap::CallbackForwarder()
+ell::api::CallbackForwarder<double, double>& CompiledMap::GetCallbackForwarder()
 {
-    static ell::api::CallbackForwarder<double, double> forwarderDouble;
     return forwarderDouble;
 }
 
 // Specializations with type-specific static forwarder instances
 template <>
-ell::api::CallbackForwarder<float, float>& CompiledMap::CallbackForwarder()
+ell::api::CallbackForwarder<float, float>& CompiledMap::GetCallbackForwarder()
 {
-    static ell::api::CallbackForwarder<float, float> forwarderFloat;
     return forwarderFloat;
 }
 }

@@ -5,6 +5,7 @@
 #  Authors:  Chris Lovett
 #            Byron Changuion
 #            Kern Handa
+#            Chuck Jacobs
 #
 #  Requires: Python 3.x
 #
@@ -16,6 +17,22 @@ import math
 import platform
 import cv2
 import numpy as np
+from itertools import product
+
+
+# helper function that will find the ELL package if we need it.
+def find_ell():
+    try:
+        import ell
+    except:
+        ell_root = os.getenv("ELL_ROOT")
+        if ell_root and os.path.isdir(ell_root):
+            sys.path += [ os.path.join(ell_root, 'tools/utilities/pythonlibs') ]
+            import find_ell
+            import ell
+        else:
+            raise Exception("Couldn't locate the ELL python module. Please refer to the ELL wiki " +
+                            "for information on how to install the ELL python module.")
 
 # Find any child directory that matches the four deployment targets (pi3,
 # pi3_64, aarch64, host) or begins with "model". For all these directories,
@@ -34,7 +51,29 @@ else:
     sys.path += [os.path.join(d, "build") for d in SEARCH_DIRS]
 
 
-def prepare_image_for_model(image, width, height, reorder_to_rgb=False):
+def sigmoid(x):
+    "Returns sigmoid activation applied to the input"
+    if x > 0:
+        return 1 / (1 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        return ex / (1 + ex)
+
+
+def softmax(x):
+    "Returns softmax activation applied to the input"
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=0)
+
+
+def set_camera_resolution(camera, width, height):
+    """ set the resolution of the OpenCV camera object """
+    camera.set(3, width)
+    camera.set(4, height)
+
+
+def prepare_image_for_model(
+        image, width, height, reorder_to_rgb=False, ravel=True):
     """Prepare an image for use with a model. Typically, this involves:
         - Resize and center crop to the required width and height while
           preserving the image's aspect ratio.
@@ -42,8 +81,8 @@ def prepare_image_for_model(image, width, height, reorder_to_rgb=False):
           affect the model's ability to classify images.
         - OpenCV gives the image in BGR order, so we may need to re-order the
           channels to RGB.
-        - Convert the OpenCV result to a std::vector<float> for use with the
-          ELL model.
+        - Optionally, convert the OpenCV result to a std::vector<float> for use
+          with the ELL model.
     """
     if image.shape[0] > image.shape[1]:  # Tall (more rows than columns)
         row_start = int((image.shape[0] - image.shape[1]) / 2)
@@ -65,9 +104,11 @@ def prepare_image_for_model(image, width, height, reorder_to_rgb=False):
     # Re-order color channels if needed
     if reorder_to_rgb:
         resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    # Return as a vector of floats
-    result = resized.astype(np.float).ravel()
-    return result
+    if ravel:
+        # Return as a vector of floats
+        result = resized.astype(np.float).ravel()
+        return result
+    return resized, (col_start, row_start), (cropped.shape[1] / width, cropped.shape[0] / height)
 
 
 def get_top_n(predictions, n=5, threshold=0.20):
@@ -264,3 +305,204 @@ def play_sound(sound_file):
         subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=0, universal_newlines=True)
+
+
+class Region:
+    """ Helper class that represents a detected object in an image.
+
+        `category` - The category that represents the object detected.
+
+        `probability` - The confidence that the specific object is present
+        within the bounding box.
+
+        `location` - An array representing the bounding box encompassing the
+        detected object. First two values are the x and y coordinates
+        representing the top, left of the bounding box, respectively. Second pair
+        of values are the width and height of the bounding box, respectively.
+        All values are normalized and thus need to be scaled accordingly by the
+        dimensions of the image onto which the bounding box is to be applied.
+    """
+    def __init__(self, category, probability, location):
+        self.category = category
+        self.probability = probability
+        self.location = np.array(location)
+
+    def __repr__(self):
+        return ('Region(category = {0.category},\n'
+                'probability = {0.probability},\n'
+                'location = {0.location})').format(self)
+
+    def intersect(self, region):
+        """ return the intersection between this region and the given region """
+        x1, y1, w1, h1 = self.location
+        x2, y2 = (x1 + w1, y1 + h1)
+        x3, y3, w2, h2 = region.location
+        x4, y4 = (x3 + w2, y3 + h2)
+        x1, y1 = np.maximum((x1, y1), (x3, y3))
+        x2, y2 = np.minimum((x2, y2), (x4, y4))
+        if x2 <= x1 or y2 <= y1:
+            return (0, 0, 0, 0)
+        return (x1, y1, x2 - x1, y2 - y1)
+
+
+def get_regions(inference_output, categories, threshold, anchor_boxes):
+    """Returns an array of Region instances that represent detected objects
+    and their locations.
+
+    `inference_output` must be a tensor in the shape of the output of the
+    network.
+
+    `categories` is a list of categories that represent the type of objects to
+    be detected.
+
+    `threshold` is the minimum probability of the presence of an object and
+    that the object is of a specific type, i.e., P(category|object) >=
+    `threshold`.
+
+    `anchor_boxes` is the list of anchor boxes that are used to augment the
+    bounding boxes.
+    """
+
+    regions = []
+    shape = inference_output.shape
+    # four values for the bounding box coordinates plus one for the confidence
+    # the rest of the values are the probabilities for the individual
+    # categories
+    box_size = 5 + len(categories)
+    num_boxes = shape[2] // box_size
+    for i, j, c in product(range(shape[0]),
+                           range(shape[1]),
+                           range(num_boxes)):
+        # The coordinates and confidence values need to be "unpacked".
+        # The order for each region is `[x, y, w, h, c,
+        # category probabilities...]`. There are `num_boxes` regions for each
+        # `i, j` coordinate pair.
+        box_offset = c * box_size
+        # The X and Y values need to have sigmoid activation applied
+        predicted_x = sigmoid(inference_output[i, j, box_offset + 0])
+        predicted_y = sigmoid(inference_output[i, j, box_offset + 1])
+        # The width and height need to be exponentiated
+        predicted_width = np.exp(inference_output[i, j, box_offset + 2])
+        predicted_height = np.exp(inference_output[i, j, box_offset + 3])
+        predicted_confidence = inference_output[i, j, box_offset + 4]
+
+        # Get the final normalized values for the coordinates of the bounding
+        # box
+        x = (j + predicted_x) / shape[0]
+        y = (i + predicted_y) / shape[1]
+        w = predicted_width * anchor_boxes[2 * c + 0] / shape[0]
+        h = predicted_height * anchor_boxes[2 * c + 1] / shape[1]
+        confidence = predicted_confidence
+
+        # The `category_scores` have not had softmax applied to them, so just
+        # apply softmax and find the index of the largest value and get the
+        # corresponding category label.
+        category_scores = softmax(inference_output[i,
+                                                   j,
+                                                   box_offset + 5 :
+                                                   box_offset + box_size])
+        category_index = np.argmax(category_scores)
+        probability = confidence * category_scores[category_index]
+
+        # Only add to the list of returned regions if the probability is
+        # greater than the threshold
+        if probability > threshold:
+            regions.append(Region(categories[category_index], probability,
+                                  (x - (w/2), y - (h/2), w, h)))
+    return regions
+
+
+def non_max_suppression(regions, overlap_threshold, categories):
+    """Given a list of `regions` (returned by a call to `get_regions`), remove
+    any overlapping bounding boxes for the same object.
+
+    `overlap_threshold` is the minimum amount of overlap needed between two
+    boxes for them to be considered the same.
+
+    `categories` is a list of categories that represent the type of objects to
+    be detected.
+    """
+
+    if not regions:
+        # If list of regions is empty, return an empty list
+        return []
+
+    final_regions = []
+    for c in categories:
+        # Only look at regions that have found the same object
+        filtered_regions = [
+            region for region in regions if region.category == c]
+        if len(filtered_regions) < 2:
+            continue
+
+        # Get all the boxes that represent the object in question
+        boxes = np.array([region.location for region in filtered_regions])
+
+        # Calculate the areas once
+        areas = boxes[:, 2] * boxes[:, 3]
+
+        # `argsort` returns the indices in ascending order
+        # We want the regions with the highest probability to be considered
+        # the "main" regions
+        sorted_indices = np.argsort([r.probability for r in filtered_regions])
+        pick = []
+        while len(sorted_indices):
+            last = len(sorted_indices) - 1
+            i = sorted_indices[last]
+            pick.append(i)
+            suppress = [last]
+            for pos in range(last):
+                j = sorted_indices[pos]
+
+                intersection = filtered_regions[i].intersect(filtered_regions[j])
+
+                overlap_width = intersection[2]
+                overlap_height = intersection[3]
+
+                # If either `overlap_width` or `overlap_height` are `<= 0`
+                # then that means there's no overlap
+                if overlap_width > 0 and overlap_height > 0:
+                    overlap1 = overlap_width * overlap_height / areas[j]
+                    overlap2 = overlap_width * overlap_height / areas[i]
+
+                    # If there's enough overlap, we want to remove this box
+                    if overlap1 > overlap_threshold and overlap2 > overlap_threshold:
+                        suppress.append(pos)
+
+            # Remove all the values that are at the list of indices of
+            # `suppress` and return the resultant array
+            sorted_indices = np.delete(sorted_indices, suppress)
+
+        # Append to `final_regions` the main bounding boxes
+        final_regions += [filtered_regions[i] for i in pick]
+
+    return final_regions
+
+
+def draw_regions_on_image(image, regions, offset, scale):
+    """Draws a bounding box with a text label for each `Region` instance in
+    `regions` on `image`."""
+
+    for r in regions:
+        # Unpack the location
+        x, y, w, h = r.location
+        width = image.shape[1]
+        height = image.shape[0]
+
+        # Clamp the values so that they remain within the bounds of the overall
+        # image
+        x_scale = scale[0]
+        y_scale = scale[1]
+        x1 = max(0, int(offset[0] + (x * x_scale)))
+        y1 = max(0, int(offset[1] + (y * y_scale)))
+        x2 = min(width, int(offset[0] + (x + w) * x_scale))
+        y2 = min(height, int(offset[1] + (y + h) * y_scale))
+
+        image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        image = cv2.putText(
+            image, "{0} - {1:.0%}".format(r.category, r.probability),
+            (x1, y1 - 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1e-3 * height,
+            (0, 255, 0),
+            2)

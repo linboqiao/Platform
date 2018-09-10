@@ -21,15 +21,18 @@ set (src
     src/IRFunctionEmitter.cpp
     src/IRHeaderWriter.cpp
     src/IRIfEmitter.cpp
-    src/IRLocalValue.cpp
     src/IRLoader.cpp
+    src/IRLocalArray.cpp
+    src/IRLocalMultidimArray.cpp
+    src/IRLocalScalar.cpp
     src/IRLocalValue.cpp
-    src/IRLocalValueOperations.cpp
     src/IRLoopEmitter.cpp
     src/IRMetadata.cpp
     src/IRModuleEmitter.cpp
     src/IROptimizer.cpp
+    src/IRParallelLoopEmitter.cpp
     src/IRPosixRuntime.cpp
+    src/IRProfiler.cpp
     src/IRRuntime.cpp
     src/IRSwigInterfaceWriter.cpp
     src/IRTask.cpp
@@ -56,13 +59,17 @@ set (include
     include/IRHeaderWriter.h
     include/IRIfEmitter.h
     include/IRLoader.h
+    include/IRLocalArray.h
+    include/IRLocalMultidimArray.h
+    include/IRLocalScalar.h
     include/IRLocalValue.h
-    include/IRLocalValueOperations.h
     include/IRLoopEmitter.h
-    include/IRModuleEmitter.h
     include/IRMetadata.h
+    include/IRModuleEmitter.h
     include/IROptimizer.h
+    include/IRParallelLoopEmitter.h
     include/IRPosixRuntime.h
+    include/IRProfiler.h
     include/IRRuntime.h
     include/IRSwigInterfaceWriter.h
     include/IRTask.h
@@ -82,7 +89,7 @@ set (tcc
     tcc/CompilableIRFunction.tcc
     tcc/EmitterTypes.tcc
     tcc/IRFunctionEmitter.tcc
-    tcc/IRLocalValueOperations.tcc
+    tcc/IRLocalScalar.tcc
     tcc/IRModuleEmitter.tcc
     tcc/IRRuntime.tcc
     tcc/ScalarVariable.tcc
@@ -109,7 +116,7 @@ source_group("templates" FILES ${templates})
 add_library(${library_name} ${src} ${include} ${tcc} ${templates})
 target_include_directories(${library_name} PUBLIC include templates)
 target_include_directories(${library_name} SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
-target_link_libraries(${library_name} utilities ${LLVM_LIBS})
+target_link_libraries(${library_name} math utilities ${LLVM_LIBS})
 target_compile_definitions(${library_name} PUBLIC ${LLVM_DEFINITIONS})
 target_compile_options(${library_name} PUBLIC ${LLVM_COMPILE_OPTIONS})
 
@@ -130,14 +137,18 @@ set (test_src
   test/src/AsyncEmitterTest.cpp
   test/src/IREmitterTest.cpp
   test/src/IRFunctionTest.cpp
+  test/src/IRProfilerTest.cpp
   test/src/PosixEmitterTest.cpp
+  test/src/StdlibEmitterTest.cpp
 )
 
 set (test_include
   test/include/AsyncEmitterTest.h
   test/include/IREmitterTest.h
   test/include/IRFunctionTest.h
+  test/include/IRProfilerTest.h
   test/include/PosixEmitterTest.h
+  test/include/StdlibEmitterTest.h
 )
 
 source_group("src" FILES ${test_src})

@@ -34,6 +34,8 @@ set(src
     src/SingleElementThresholdNode.cpp
     src/SoftmaxLayerNode.cpp
     src/UnrolledConvolutionNode.cpp
+    src/VoiceActivityDetectorNode.cpp
+    src/WinogradConvolutionNode.cpp
 )
 
 set(include
@@ -49,6 +51,7 @@ set(include
     include/BufferNode.h
     include/ClockNode.h
     include/CompiledActivationFunctions.h
+    include/ConcatenationNode.h
     include/ConstantNode.h
     include/ConvolutionalLayerNode.h
     include/DCTNode.h
@@ -57,6 +60,7 @@ set(include
     include/DemultiplexerNode.h
     include/DiagonalConvolutionNode.h
     include/DotProductNode.h
+    include/DTWDistanceNode.h
     include/ExtremalValueNode.h
     include/FFTNode.h
     include/FilterBankNode.h
@@ -94,7 +98,9 @@ set(include
     include/TypeCastNode.h
     include/UnaryOperationNode.h
     include/UnrolledConvolutionNode.h
+    include/VoiceActivityDetectorNode.h
     include/ValueSelectorNode.h
+    include/WinogradConvolutionNode.h
 )
 
 set (tcc
@@ -104,6 +110,7 @@ set (tcc
     tcc/BinaryPredicateNode.tcc
     tcc/BroadcastFunctionNode.tcc
     tcc/BufferNode.tcc
+    tcc/ConcatenationNode.tcc
     tcc/ConstantNode.tcc
     tcc/DTWDistanceNode.tcc
     tcc/DebugSinkNode.tcc
@@ -129,6 +136,7 @@ set (tcc
     tcc/SumNode.tcc
     tcc/TypeCastNode.tcc
     tcc/UnaryOperationNode.tcc
+    tcc/VoiceActivityDetectorNode.tcc
     tcc/ValueSelectorNode.tcc
 )
 
@@ -161,20 +169,110 @@ endif()
 set_property(TARGET ${library_name} PROPERTY FOLDER "libraries")
 
 #
-# test project 
+# test projects
 #
 
+# general nodes tests
 set(test_name ${library_name}_test)
 
 set(test_src
     test/src/main.cpp
-    test/src/NeuralNetworkLayerNodesTest.cpp
-    test/src/Nodes_test.cpp
+    test/src/NodesTests.cpp
+    test/src/NodesTestData.cpp
 )
 
 set(test_include
-    test/include/NeuralNetworkLayerNodesTest.h
-    test/include/Nodes_test.h
+    test/include/NodesTests.h
+    test/include/NodesTestData.h
+)
+
+source_group("src" FILES ${test_src})
+source_group("include" FILES ${test_include})
+
+add_executable(${test_name}
+    ${test_src}
+    ${test_include}
+)
+
+target_include_directories(${test_name}
+    PRIVATE
+        test/include
+)
+
+target_link_libraries(${test_name}
+    common
+    data
+    model
+    nodes
+    testing
+    utilities
+)
+
+copy_shared_libraries(${test_name})
+
+set_property(TARGET ${test_name} PROPERTY FOLDER "tests")
+
+add_test(NAME ${test_name} COMMAND ${test_name})
+set_test_library_path(${test_name})
+
+# dsp nodes tests
+set(test_name dsp_${library_name}_test)
+
+set(test_src
+    test/src/DSPNodesTest_main.cpp
+    test/src/DSPNodesTests.cpp
+    test/src/DSPNodesTiming.cpp
+    test/src/NodesTestData.cpp
+)
+
+set(test_include
+    test/include/DSPNodesTests.h
+    test/include/DSPNodesTiming.h
+    test/include/NodesTestData.h
+)
+
+source_group("src" FILES ${test_src})
+source_group("include" FILES ${test_include})
+
+add_executable(${test_name}
+    ${test_src}
+    ${test_include}
+)
+
+target_include_directories(${test_name}
+    PRIVATE
+        test/include
+)
+
+target_link_libraries(${test_name}
+    common
+    math
+    model
+    nodes
+    testing
+    model_testing
+    utilities
+)
+
+copy_shared_libraries(${test_name})
+
+set_property(TARGET ${test_name} PROPERTY FOLDER "tests")
+
+add_test(NAME ${test_name} COMMAND ${test_name})
+set_test_library_path(${test_name})
+
+# neural net nodes test
+set(test_name nn_${library_name}_test)
+
+set(test_src
+    test/src/NeuralNetworkLayerNodesTest_main.cpp
+    test/src/NeuralNetworkLayerNodesTests.cpp
+    test/src/NodesTestData.cpp
+)
+
+set(test_include
+    test/include/NeuralNetworkLayerNodesTests.h
+    test/include/NodesTestData.h
 )
 
 source_group("src" FILES ${test_src})
@@ -193,6 +291,7 @@ target_include_directories(${test_name}
 
 target_link_libraries(${test_name}
     common
+    dsp
     math
     model
     nodes
@@ -207,3 +306,47 @@ set_property(TARGET ${test_name} PROPERTY FOLDER "tests")
 
 add_test(NAME ${test_name} COMMAND ${test_name})
 set_test_library_path(${test_name})
+
+#
+# timing project 
+#
+
+set(timing_name ${library_name}_timing)
+
+set(timing_src
+    test/src/timing_main.cpp
+    test/src/DSPNodesTiming.cpp
+)
+
+set(timing_include
+    test/include/DSPNodesTiming.h
+)
+
+source_group("src" FILES ${timing_src})
+source_group("include" FILES ${timing_include})
+
+add_executable(${timing_name}
+    ${timing_src}
+    ${timing_include}
+    ${include}
+)
+
+target_include_directories(${timing_name}
+    PRIVATE
+        test/include
+)
+
+target_link_libraries(${timing_name}
+    dsp
+    math
+    model
+    nodes
+    predictors
+    testing
+    utilities
+)
+
+copy_shared_libraries(${timing_name})
+
+set_property(TARGET ${timing_name} PROPERTY FOLDER "tests")
+

@@ -2,12 +2,9 @@
 //
 //  Project:  Embedded Learning Library (ELL)
 //  File:     IRFunctionEmitter.tcc (emitters)
-//  Authors:  Umesh Madan
+//  Authors:  Umesh Madan, Chuck Jacobs, Kern Handa
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Needed in the tcc because IRLocalValueHelpers.h needs IRFunctionEmitter to be defined
-#include "IRLocalValueOperations.h"
 
 namespace ell
 {
@@ -42,16 +39,12 @@ namespace emitters
     {
         assert(pRightValue != nullptr);
 
-        auto forLoop = ForLoop();
         llvm::Value* pLeftItem = Literal(leftValue);
-        forLoop.Begin(size);
-        {
-            auto i = forLoop.LoadIterationVariable();
-            llvm::Value* pRightItem = ValueAt(pRightValue, i);
-            llvm::Value* pTemp = Operator(type, pLeftItem, pRightItem);
+        For(size, [pLeftItem, pRightValue, type, aggregator](IRFunctionEmitter& fn, llvm::Value* i) {
+            llvm::Value* pRightItem = fn.ValueAt(pRightValue, i);
+            llvm::Value* pTemp = fn.Operator(type, pLeftItem, pRightItem);
             aggregator(i, pTemp);
-        }
-        forLoop.End();
+        });
     }
 
     template <typename ValueType>
@@ -59,16 +52,12 @@ namespace emitters
     {
         assert(pLeftValue != nullptr);
 
-        auto forLoop = ForLoop();
         llvm::Value* pRightItem = Literal(rightValue);
-        forLoop.Begin(size);
-        {
-            auto i = forLoop.LoadIterationVariable();
-            llvm::Value* pLeftItem = ValueAt(pLeftValue, i);
-            llvm::Value* pTemp = Operator(type, pLeftItem, pRightItem);
+        For(size, [pLeftValue, pRightItem, type, aggregator](IRFunctionEmitter& fn, llvm::Value* i) {
+            llvm::Value* pLeftItem = fn.ValueAt(pLeftValue, i);
+            llvm::Value* pTemp = fn.Operator(type, pLeftItem, pRightItem);
             aggregator(i, pTemp);
-        }
-        forLoop.End();
+        });
     }
 
     template <typename ValueType>

@@ -51,13 +51,13 @@ namespace nodes
         virtual const model::PortMemoryLayout& GetInputMemoryLayout() const = 0;
 
         /// <summary> Gets information about the output memory layout </summary>
-        virtual const model::PortMemoryLayout& GetOutputMemoryLayout() const = 0;
-
-        /// <summary> Gets information about the output memory layout </summary>
-        virtual model::PortMemoryLayout& GetOutputMemoryLayout() = 0;
+        virtual model::PortMemoryLayout GetOutputMemoryLayout() const = 0;
 
         /// <summary> Gets the LayerParameters from the layer wrapped by this node </summary>
         virtual typename predictors::neural::Layer<ValueType>::LayerParameters GetLayerParameters() const = 0;
+
+        /// <summary> Gets the neural network base class Layer from the actual layer wrapped by this node </summary>
+        virtual typename predictors::neural::Layer<ValueType>& GetBaseLayer() const = 0;
 
         /// <summary> Get the input padding requested by the layer </summary>
         predictors::neural::PaddingParameters GetRequestedInputPadding() const { return GetLayerParameters().inputPaddingParameters; }
@@ -116,18 +116,26 @@ namespace nodes
         const model::PortMemoryLayout& GetInputMemoryLayout() const override { return _inputLayout; }
 
         /// <summary> Gets information about the output memory layout </summary>
-        const model::PortMemoryLayout& GetOutputMemoryLayout() const override { return _outputLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const override { return output.GetMemoryLayout(); }
 
-        /// <summary> Gets information about the output memory layout </summary>
-        model::PortMemoryLayout& GetOutputMemoryLayout() override { return _outputLayout; }
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
+        ///
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         /// <summary> Gets the LayerParameters from the layer wrapped by this node </summary>
         typename predictors::neural::Layer<ValueType>::LayerParameters GetLayerParameters() const override { return _layer.GetLayerParameters(); }
 
+        /// <summary> Gets the neural network base class Layer from the actual layer wrapped by this node </summary>
+        typename predictors::neural::Layer<ValueType>& GetBaseLayer() const override { return _layer; }
+
     protected:
         size_t NumInputDimensions() const { return _inputLayout.NumDimensions(); }
         model::PortMemoryLayout CalculateMemoryLayout(size_t padding, typename predictors::neural::Layer<ValueType>::Shape dataBufferSize);
-        void Copy(model::ModelTransformer& transformer) const override;
         void Compute() const override;
         utilities::ArchiveVersion GetArchiveVersion() const override;
         bool CanReadArchiveVersion(const utilities::ArchiveVersion& version) const override;
@@ -143,7 +151,6 @@ namespace nodes
 
     private:
         model::PortMemoryLayout _inputLayout;
-        model::PortMemoryLayout _outputLayout;
         math::TensorShape _inputShape;
     };
 

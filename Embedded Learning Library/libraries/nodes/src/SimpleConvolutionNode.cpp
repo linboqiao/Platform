@@ -9,6 +9,9 @@
 #include "SimpleConvolutionNode.h"
 #include "ConstantNode.h"
 
+// dsp
+#include "Convolution.h"
+
 // math
 #include "Matrix.h"
 
@@ -18,9 +21,144 @@ namespace nodes
 {
     namespace
     {
-        size_t GetOutputSize(const model::PortMemoryLayout& outputLayout)
+        using namespace ::ell::emitters;
+        using namespace ::ell::model;
+
+        //
+        // Low-level code-generation
+        //
+        template <typename ValueType>
+        void EmitSimpleConvolutionCode(IRFunctionEmitter& function, llvm::Value* input, llvm::Value* filterWeights, const PortMemoryLayout& inputLayout, const PortMemoryLayout& outputLayout, int filterSize, int stride, llvm::Value* result)
         {
-            return outputLayout.GetActiveSize(0) * outputLayout.GetActiveSize(1) * outputLayout.GetActiveSize(2);
+            // input is a d x (w+2p) x (h+2p) array
+            // reshaped, it's a d*(w+2p)) x (h+2p) array == d*(w+k-1) x (h+k-1)
+
+            // filterWeights is f x k x k x d array
+            // reshaped, it's (f*k) x (k*d) or f x k x (k*d)
+
+            // output is a (w+2p) x (h+2p) x f array
+
+            // Model parameters
+            const auto inputPadding = inputLayout.GetOffset(0);
+            DEBUG_USED(inputPadding);
+            assert((inputPadding == filterSize / 2) && "Input padding must be filterSize/2");
+
+            auto inputMemoryIncrements = inputLayout.GetCumulativeIncrement();
+
+            // For each filter
+            const auto numFilters = outputLayout.GetActiveSize(2);
+            function.ParallelFor(numFilters, { input, filterWeights, result }, [inputLayout, outputLayout, inputMemoryIncrements, filterSize, stride](IRFunctionEmitter& function, IRLocalScalar filterIndex, const std::vector<llvm::Value*>& capturedValues) {
+                auto input = capturedValues[0];
+                auto filterWeights = capturedValues[1];
+                auto result = capturedValues[2];
+                auto outputTensor = function.LocalTensor(result, outputLayout.GetStride().ToVector(), RowMajorTensorLayout);
+
+                // For each output row
+                const auto outputRows = outputLayout.GetActiveSize(0);
+                function.For(outputRows, [filterIndex, input, filterWeights, inputLayout, outputLayout, inputMemoryIncrements, outputTensor, filterSize, stride](IRFunctionEmitter& function, llvm::Value* loopIndex2) {
+                    auto outputRow = function.LocalScalar(loopIndex2);
+
+                    // For each output column
+                    const auto outputColumns = outputLayout.GetActiveSize(1);
+                    function.For(outputColumns, [outputRow, filterIndex, input, filterWeights, inputLayout, inputMemoryIncrements, outputTensor, filterSize, stride](IRFunctionEmitter& function, llvm::Value* loopIndex3) {
+                        auto outputColumn = function.LocalScalar(loopIndex3);
+
+                        const bool canCombineColumns = (inputLayout.GetActiveSize(1) == inputLayout.GetStride(1)) && (stride == 1);
+                        const auto inputDepth = inputLayout.GetActiveSize(2);
+
+                        // The filters are typically small, so we unroll the loops here
+                        auto val = function.LocalScalar(ValueType{0});
+                        for (int windowRow = 0; windowRow < filterSize; ++windowRow)
+                        {
+                            // Note: if the memory storage from consecutive columns is contiguous, we can process them together and avoid a loop
+                            if (canCombineColumns)
+                            {
+                                auto inputOffset = ((outputRow + windowRow) * inputMemoryIncrements[0]) +
+                                                   (outputColumn * inputMemoryIncrements[1]);
+                                auto imageRow = function.PointerOffset(input, inputOffset);
+                                auto filterOffset = inputDepth * (filterSize * windowRow) +
+                                                    filterIndex * (filterSize * filterSize * inputDepth);
+                                auto filterRow = function.PointerOffset(filterWeights, filterOffset);
+                                val = val + function.DotProduct(filterSize * inputDepth, imageRow, filterRow);
+                            }
+                            else
+                            {
+                                for (int windowColumn = 0; windowColumn < filterSize; ++windowColumn)
+                                {
+                                    // I[r+wc, c+wc]
+                                    auto inputRow = outputRow * stride;
+                                    auto inputColumn = outputColumn * stride;
+                                    auto inputOffset = ((inputRow + windowRow) * inputMemoryIncrements[0]) +
+                                                       ((inputColumn + windowColumn) * inputMemoryIncrements[1]);
+                                    auto imageRow = function.PointerOffset(input, inputOffset);
+                                    auto filterOffset = inputDepth * (filterSize * windowRow + windowColumn) +
+                                                        filterIndex * (filterSize * filterSize * inputDepth);
+                                    auto filterRow = function.PointerOffset(filterWeights, filterOffset);
+                                    val = val + function.DotProduct(inputDepth, imageRow, filterRow);
+                                }
+                            }
+                            outputTensor({ outputRow, outputColumn, filterIndex }) = val;
+                        }
+                    }); // End outputColumns loop
+                }); // End outputRows loop
+            }); // End numFilters loop
+        }
+
+        template<typename ValueType>
+        void EmitSimpleDepthwiseSeparableConvolutionCode(IRFunctionEmitter& function, llvm::Value* input, llvm::Value* filterWeights, const PortMemoryLayout& inputLayout, const PortMemoryLayout& outputLayout, int filterSize, int stride, llvm::Value* result)
+        {
+            const auto inputDepth = inputLayout.GetActiveSize(2);
+            const auto inputPadding = inputLayout.GetOffset(0);
+            DEBUG_USED(inputPadding, inputDepth);
+            assert((inputPadding == filterSize / 2) && "Input padding must be filterSize/2");
+
+            // output data parameters
+            // const auto outputRows = outputLayout.GetActiveSize(0);
+            // const auto outputColumns = outputLayout.GetActiveSize(1);
+            const auto numFilters = outputLayout.GetActiveSize(2);
+            assert(numFilters == inputDepth);
+            DEBUG_USED(numFilters);
+
+            // For each filter
+            // For each output row
+            const auto outputRows = outputLayout.GetActiveSize(0);
+            function.ParallelFor(outputRows, { input, filterWeights, result }, [inputLayout, outputLayout, filterSize, stride](IRFunctionEmitter& function, auto outputRow, const std::vector<llvm::Value*>& capturedValues) {
+                auto input = capturedValues[0];
+                auto filterWeights = capturedValues[1];
+                auto result = capturedValues[2];
+
+                auto inputTensor = function.LocalTensor(input, inputLayout.GetStride().ToVector(), RowMajorTensorLayout);
+                auto outputTensor = function.LocalTensor(result, outputLayout.GetStride().ToVector(), RowMajorTensorLayout);
+                auto filter = function.LocalMultidimArray(filterWeights, { inputLayout.GetStride(2), filterSize, filterSize});
+
+                // For each output column
+                const auto outputColumns = outputLayout.GetActiveSize(1);
+                function.For(outputColumns, [outputLayout, outputRow, inputTensor, filter, outputTensor, filterSize, stride](IRFunctionEmitter& function, auto outputColumn) {
+                    // For each filter
+                    const auto numFilters = outputLayout.GetActiveSize(2);
+                    function.For(numFilters, [outputRow, outputColumn, inputTensor, filter, outputTensor, filterSize, stride](IRFunctionEmitter& function, auto filterIndex) {
+                        // The filters are typically small, so we unroll the loops here
+                        auto val = function.LocalScalar(ValueType{0});
+                        for (int windowRow = 0; windowRow < filterSize; ++windowRow)
+                        {
+                            for (int windowColumn = 0; windowColumn < filterSize; ++windowColumn)
+                            {
+                                auto inputRow = outputRow * stride;
+                                auto inputColumn = outputColumn * stride;
+
+                                auto filterRow = function.LocalScalar(windowRow);
+                                auto filterColumn = function.LocalScalar(windowColumn);
+
+                                auto inputVal = inputTensor({ inputRow + windowRow, inputColumn + windowColumn, filterIndex });
+                                auto filterVal = filter({ filterIndex, filterRow, filterColumn });
+
+                                val += inputVal * filterVal;
+                            }
+                        }
+                        outputTensor({ outputRow, outputColumn, filterIndex }) = val;
+                    });
+                });
+            });
         }
     } // end anonymous namespace
 
@@ -28,33 +166,32 @@ namespace nodes
     // SimpleConvolutionNode
     //
 
-    template <typename ValueType>
+    template<typename ValueType>
     SimpleConvolutionNode<ValueType>::SimpleConvolutionNode()
         : CompilableNode({ &_input }, { &_output }), _input(this, {}, defaultInputPortName), _output(this, defaultOutputPortName, 0)
     {
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     SimpleConvolutionNode<ValueType>::SimpleConvolutionNode(const model::PortElements<ValueType>& input,
                                                             const model::PortMemoryLayout& inputMemoryLayout,
                                                             const model::PortMemoryLayout& outputMemoryLayout,
                                                             const ConstTensorReferenceType& filterWeights,
-                                                            const predictors::neural::ConvolutionalParameters& convolutionalParameters,
-                                                            const predictors::neural::PaddingParameters& inputPaddingParameters,
-                                                            const predictors::neural::PaddingParameters& outputPaddingParameters)
-        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, GetOutputSize(outputMemoryLayout)), _inputMemoryLayout(inputMemoryLayout), _outputMemoryLayout(outputMemoryLayout), _filterWeights(filterWeights), _convolutionalParameters(convolutionalParameters), _inputPaddingParameters(inputPaddingParameters), _outputPaddingParameters(outputPaddingParameters)
+                                                            size_t stride)
+        : CompilableNode({ &_input }, { &_output }), _input(this, input, defaultInputPortName), _output(this, defaultOutputPortName, outputMemoryLayout), _inputMemoryLayout(inputMemoryLayout), _filterWeights(filterWeights), _stride(static_cast<int>(stride))
     {
+        _isDepthwiseSeparable = (filterWeights.NumChannels() == 1) && (inputMemoryLayout.GetActiveSize()[2] > 1);
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     void SimpleConvolutionNode<ValueType>::Copy(model::ModelTransformer& transformer) const
     {
         auto newInput = transformer.TransformPortElements(_input.GetPortElements());
-        auto newNode = transformer.AddNode<SimpleConvolutionNode<ValueType>>(newInput, _inputMemoryLayout, _outputMemoryLayout, _filterWeights, _convolutionalParameters, _inputPaddingParameters, _outputPaddingParameters);
+        auto newNode = transformer.AddNode<SimpleConvolutionNode<ValueType>>(newInput, _inputMemoryLayout, GetOutputMemoryLayout(), _filterWeights, _stride);
         transformer.MapNodeOutput(this->output, newNode->output);
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     bool SimpleConvolutionNode<ValueType>::Refine(model::ModelTransformer& transformer) const
     {
         auto newInput = transformer.TransformPortElements(this->input.GetPortElements());
@@ -62,50 +199,77 @@ namespace nodes
         // (row, column), channel order:
         const auto& weightsMatrix = _filterWeights.ReferenceAsMatrix();
         const auto weightsValues = weightsMatrix.ToArray();
+        const int filterSize = _filterWeights.NumColumns();
         auto weightsNode = transformer.AddNode<ConstantNode<ValueType>>(weightsValues);
-        auto convNode = transformer.AddNode<SimpleConvolutionComputeNode<ValueType>>(newInput, weightsNode->output, _inputMemoryLayout, _outputMemoryLayout, _convolutionalParameters, _inputPaddingParameters, _outputPaddingParameters);
+        auto convNode = transformer.AddNode<SimpleConvolutionComputeNode<ValueType>>(newInput, weightsNode->output, _inputMemoryLayout, GetOutputMemoryLayout(), filterSize, _stride, _isDepthwiseSeparable);
         transformer.MapNodeOutput(this->output, convNode->output);
         return true;
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     void SimpleConvolutionNode<ValueType>::Compute() const
     {
         throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
+    }
+
+    template<typename ValueType>
+    void SimpleConvolutionNode<ValueType>::WriteToArchive(utilities::Archiver& archiver) const
+    {
+        model::CompilableNode::WriteToArchive(archiver);
+        archiver[defaultInputPortName] << _input;
+        archiver["inputLayout"] << _inputMemoryLayout;
+        archiver["outputLayout"] << GetOutputMemoryLayout();
+        archiver["stride"] << _stride;
+        math::TensorArchiver::Write(_filterWeights, "weights", archiver);
+    }
+
+    template<typename ValueType>
+    void SimpleConvolutionNode<ValueType>::ReadFromArchive(utilities::Unarchiver& archiver)
+    {
+        model::CompilableNode::ReadFromArchive(archiver);
+        archiver[defaultInputPortName] >> _input;
+        archiver["inputLayout"] >> _inputMemoryLayout;
+        model::PortMemoryLayout outputMemoryLayout;
+        archiver["outputLayout"] >> outputMemoryLayout;
+        _output.SetMemoryLayout(outputMemoryLayout);
+        archiver["stride"] >> _stride;
+        math::TensorArchiver::Read(_filterWeights, "weights", archiver);
+
+        _isDepthwiseSeparable = (_filterWeights.NumChannels() == 1) && (_inputMemoryLayout.GetActiveSize()[2] > 1);
     }
 
     //
     // SimpleConvolutionComputeNode
     //
 
-    template <typename ValueType>
+    template<typename ValueType>
     SimpleConvolutionComputeNode<ValueType>::SimpleConvolutionComputeNode()
         : CompilableNode({ &_input }, { &_output }), _input(this, {}, defaultInputPortName), _filterWeights(this, {}, filterWeightsPortName), _output(this, defaultOutputPortName, 0)
     {
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     SimpleConvolutionComputeNode<ValueType>::SimpleConvolutionComputeNode(const model::PortElements<ValueType>& input,
                                                                           const model::PortElements<ValueType>& filterWeights,
                                                                           const model::PortMemoryLayout& inputMemoryLayout,
                                                                           const model::PortMemoryLayout& outputMemoryLayout,
-                                                                          const predictors::neural::ConvolutionalParameters& convolutionalParameters,
-                                                                          const predictors::neural::PaddingParameters& inputPaddingParameters,
-                                                                          const predictors::neural::PaddingParameters& outputPaddingParameters)
-        : CompilableNode({ &_input, &_filterWeights }, { &_output }), _input(this, input, defaultInputPortName), _filterWeights(this, filterWeights, filterWeightsPortName), _output(this, defaultOutputPortName, GetOutputSize(outputMemoryLayout)), _inputMemoryLayout(inputMemoryLayout), _outputMemoryLayout(outputMemoryLayout), _convolutionalParameters(convolutionalParameters), _inputPaddingParameters(inputPaddingParameters), _outputPaddingParameters(outputPaddingParameters)
+                                                                          int filterSize,
+                                                                          int stride,
+                                                                          bool isDepthwiseSeparable)
+        : CompilableNode({ &_input, &_filterWeights }, { &_output }), _input(this, input, defaultInputPortName), _filterWeights(this, filterWeights, filterWeightsPortName), _output(this, defaultOutputPortName, outputMemoryLayout), _inputMemoryLayout(inputMemoryLayout), _filterSize(filterSize), _stride(stride), _isDepthwiseSeparable(isDepthwiseSeparable)
     {
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     void SimpleConvolutionComputeNode<ValueType>::Copy(model::ModelTransformer& transformer) const
     {
         auto newInput = transformer.TransformPortElements(_input.GetPortElements());
         auto newFilterWeights = transformer.TransformPortElements(_filterWeights.GetPortElements());
-        auto newNode = transformer.AddNode<SimpleConvolutionComputeNode<ValueType>>(newInput, newFilterWeights, _inputMemoryLayout, _outputMemoryLayout, _convolutionalParameters, _inputPaddingParameters, _outputPaddingParameters);
+        auto newNode = transformer.AddNode<SimpleConvolutionComputeNode<ValueType>>(newInput, newFilterWeights, _inputMemoryLayout, GetOutputMemoryLayout(), _filterSize, _stride, _isDepthwiseSeparable);
         transformer.MapNodeOutput(this->output, newNode->output);
     }
 
-    template <typename ValueType>
+    template<typename ValueType>
     void SimpleConvolutionComputeNode<ValueType>::Compute() const
     {
         throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
@@ -116,7 +280,7 @@ namespace nodes
     // d: # input channels
     // f: # filters (== output channels)
 
-    template <typename ValueType>
+    template<typename ValueType>
     void SimpleConvolutionComputeNode<ValueType>::Compile(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function)
     {
         // input is a d x (w+2p) x (h+2p) array
@@ -133,86 +297,18 @@ namespace nodes
         // Model parameters
         const auto inputLayout = this->GetInputMemoryLayout();
         const auto outputLayout = this->GetOutputMemoryLayout();
-        const auto inputDepth = inputLayout.GetActiveSize(2);
-        const auto filterWidth = _convolutionalParameters.receptiveField;
-        const size_t padding = inputLayout.GetOffset(0);
-        DEBUG_USED(padding);
-        assert((padding == filterWidth / 2) && "Padding must be filterWidth/2");
+        const auto inputPadding = inputLayout.GetOffset(0);
+        DEBUG_USED(inputPadding);
+        assert((inputPadding == _filterSize / 2) && "Input padding must be filterSize/2");
 
-        // output data parameters
-        const size_t outputRows = outputLayout.GetActiveSize(0);
-        const size_t outputColumns = outputLayout.GetActiveSize(1);
-        const size_t numFilters = outputLayout.GetActiveSize(2);
-
-        auto inputMemoryIncrements = inputLayout.GetCumulativeIncrement();
-        auto outputMemoryIncrements = outputLayout.GetCumulativeIncrement();
-
-        // For each filter
-        function.For(numFilters, [=](emitters::IRFunctionEmitter& function, llvm::Value* loopIndex1) {
-            auto filterIndex = function.LocalScalar(loopIndex1);
-
-            // For each output row
-            function.For(outputRows, [=](emitters::IRFunctionEmitter& function, llvm::Value* loopIndex2) {
-                auto outputRow = function.LocalScalar(loopIndex2);
-
-                // For each output column
-                function.For(outputColumns, [=](emitters::IRFunctionEmitter& function, llvm::Value* loopIndex3) {
-                    auto outputColumn = function.LocalScalar(loopIndex3);
-
-                    auto outputOffset = (outputRow * function.LocalScalar(outputMemoryIncrements[0])) +
-                                        (outputColumn * function.LocalScalar(outputMemoryIncrements[1])) +
-                                        (filterIndex * function.LocalScalar(outputMemoryIncrements[2]));
-                    auto outputPtr = function.PointerOffset(pOutput, outputOffset);
-
-                    // The filters are typically small, so we unroll the loops here
-                    for (size_t windowRow = 0; windowRow < filterWidth; ++windowRow)
-                    {
-                        // Note: if the memory storage from consecutive columns is contiguous, we can process them together and avoid a loop
-                        const bool canCombineColumns = _inputMemoryLayout.GetActiveSize(1) == _inputMemoryLayout.GetStride(1);
-                        if (canCombineColumns)
-                        {
-                            auto inputOffset = ((outputRow + function.LocalScalar<int>(windowRow)) * function.LocalScalar<int>(inputMemoryIncrements[0])) +
-                                               (outputColumn * function.LocalScalar<int>(inputMemoryIncrements[1]));
-                            auto imageRow = function.PointerOffset(pInput, inputOffset);
-                            auto filterOffset = function.LocalScalar<int>(inputDepth * (filterWidth * windowRow)) +
-                                                (filterIndex * function.LocalScalar<int>(filterWidth * filterWidth * inputDepth));
-                            auto filterRow = function.PointerOffset(pWeights, filterOffset);
-                            auto val = function.LocalScalar(function.DotProduct(filterWidth * inputDepth, imageRow, filterRow));
-                            if (windowRow == 0)
-                            {
-                                function.Store(outputPtr, val);
-                            }
-                            else
-                            {
-                                function.Store(outputPtr, function.LocalScalar(function.Load(outputPtr)) + val);
-                            }
-                        }
-                        else
-                        {
-                            for (size_t windowColumn = 0; windowColumn < filterWidth; ++windowColumn)
-                            {
-                                // I[r+wc, c+wc]
-                                auto inputOffset = ((outputRow + function.LocalScalar<int>(windowRow)) * function.LocalScalar<int>(inputMemoryIncrements[0])) +
-                                                   ((outputColumn + function.LocalScalar<int>(windowColumn)) * function.LocalScalar<int>(inputMemoryIncrements[1]));
-                                auto imageRow = function.PointerOffset(pInput, inputOffset);
-                                auto filterOffset = function.LocalScalar<int>(inputDepth * (filterWidth * windowRow + windowColumn)) +
-                                                    (filterIndex * function.LocalScalar<int>(filterWidth * filterWidth * inputDepth));
-                                auto filterRow = function.PointerOffset(pWeights, filterOffset);
-                                auto val = function.LocalScalar(function.DotProduct(inputDepth, imageRow, filterRow));
-                                if (windowRow == 0 && windowColumn == 0)
-                                {
-                                    function.Store(outputPtr, val);
-                                }
-                                else
-                                {
-                                    function.Store(outputPtr, function.LocalScalar(function.Load(outputPtr)) + val);
-                                }
-                            }
-                        }
-                    }
-                }); // End outputColumns loop
-            }); // End outputRows loop
-        }); // End numFilters loop
+        if (!_isDepthwiseSeparable)
+        {
+            EmitSimpleConvolutionCode<ValueType>(function, pInput, pWeights, inputLayout, outputLayout, _filterSize, _stride, pOutput);
+        }
+        else
+        {
+            EmitSimpleDepthwiseSeparableConvolutionCode<ValueType>(function, pInput, pWeights, inputLayout, outputLayout, _filterSize, _stride, pOutput);
+        }
     }
 
     // Explicit specializations

@@ -35,17 +35,21 @@ namespace ell
         return "";
     }
 
-    static std::string ConvolutionMethodToString(ell::predictors::neural::ConvolutionMethod method) 
+    static std::string ConvolutionMethodToString(ell::predictors::neural::ConvolutionMethod method)
     {
         switch(method) {
             /// <summary> Normal method of doing convolution via reshaping input into columns and performing a gemm operation. </summary>
-        case ell::predictors::neural::ConvolutionMethod::unrolled:
-            return "unrolled";
+        case ell::predictors::neural::ConvolutionMethod::automatic:
+            return "automatic";
         case ell::predictors::neural::ConvolutionMethod::diagonal:
             return "diagonal";
         case ell::predictors::neural::ConvolutionMethod::simple:
             return "simple";
-        };
+        case ell::predictors::neural::ConvolutionMethod::winograd:
+            return "winograd";
+        case ell::predictors::neural::ConvolutionMethod::unrolled:
+            return "unrolled";
+        }
         return "";
     }
 	static std::string BinaryConvolutionMethodToString(ell::predictors::neural::BinaryConvolutionMethod method)
@@ -71,7 +75,6 @@ namespace ell
 		return "";
 	}
 
-
     template<typename ElementType>
     std::vector<NameValue> InspectBinaryConvolutionalLayerParameters(const ell::predictors::neural::BinaryConvolutionalLayer<ElementType>* layer)
     {
@@ -89,10 +92,12 @@ namespace ell
     {
         std::vector<NameValue> result;
         auto params = layer->GetConvolutionalParameters();
+        auto weights = layer->GetWeights();
         result.push_back(NameValue{ "stride", std::to_string(params.stride) });
         result.push_back(NameValue{ "method", ConvolutionMethodToString(params.method) });
 		result.push_back(NameValue{ "receptiveField", std::to_string(params.receptiveField) });
 		result.push_back(NameValue{ "numFilters", std::to_string(params.numFiltersAtATime) });
+		result.push_back(NameValue{ "isSeparable", std::to_string(weights.NumChannels() == 1) });
         return result;
     }
 
@@ -107,10 +112,10 @@ namespace ell
     }
 
     template<typename ElementType>
-    std::vector<NameValue> InspectLayerParameters(std::shared_ptr < ell::predictors::neural::Layer<ElementType>> layer)
+    std::vector<NameValue> InspectLayerParameters(const ell::predictors::neural::Layer<ElementType>& layer)
     {
         std::vector<NameValue> result;
-        auto params = layer->GetLayerParameters();
+        auto params = layer.GetLayerParameters();
         auto input = params.input;
         auto shape = params.outputShape;
 
@@ -126,21 +131,21 @@ namespace ell
             result.push_back(NameValue{ "outputPadding", PaddingSchemeToString(outputpadding.paddingScheme) + "," + std::to_string(outputpadding.paddingSize) });
         }
 
-        const ell::predictors::neural::BinaryConvolutionalLayer<ElementType>* bcl = dynamic_cast<const ell::predictors::neural::BinaryConvolutionalLayer<ElementType>*>(layer.get());
+        const ell::predictors::neural::BinaryConvolutionalLayer<ElementType>* bcl = dynamic_cast<const ell::predictors::neural::BinaryConvolutionalLayer<ElementType>*>(&layer);
         if (bcl != nullptr)
         {
             std::vector<NameValue> more = InspectBinaryConvolutionalLayerParameters<ElementType>(bcl);
             result.insert(result.end(), more.begin(), more.end());
         }
 
-        const ell::predictors::neural::ConvolutionalLayer<ElementType>* conv = dynamic_cast<const ell::predictors::neural::ConvolutionalLayer<ElementType>*>(layer.get());
+        const ell::predictors::neural::ConvolutionalLayer<ElementType>* conv = dynamic_cast<const ell::predictors::neural::ConvolutionalLayer<ElementType>*>(&layer);
         if (conv != nullptr)
         {
             std::vector<NameValue> more = InspectConvolutionalLayerParameters<ElementType>(conv);
             result.insert(result.end(), more.begin(), more.end());
         }
 
-        const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MaxPoolingFunction>* maxpooling = dynamic_cast<const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MaxPoolingFunction>*>(layer.get());
+        const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MaxPoolingFunction>* maxpooling = dynamic_cast<const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MaxPoolingFunction>*>(&layer);
         if (maxpooling != nullptr)
         {
             result.push_back(NameValue{ "function", "maxpooling" });
@@ -148,7 +153,7 @@ namespace ell
             result.insert(result.end(), more.begin(), more.end());
         }
 
-        const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MeanPoolingFunction>* meanpooling = dynamic_cast<const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MeanPoolingFunction>*>(layer.get());
+        const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MeanPoolingFunction>* meanpooling = dynamic_cast<const ell::predictors::neural::PoolingLayer<ElementType, ell::predictors::neural::MeanPoolingFunction>*>(&layer);
         if (meanpooling != nullptr)
         {
             result.push_back(NameValue{ "function", "meanpooling" });
@@ -158,5 +163,4 @@ namespace ell
 
 		return result;
     }
-
 }

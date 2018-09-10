@@ -6,15 +6,17 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// model
 #include "IRCompiledMap.h"
 #include "CompilableNodeUtilities.h"
 #include "EmitterException.h"
 #include "IRMapCompiler.h"
-
-// model
 #include "ModelTransformer.h"
 #include "OutputNode.h"
 #include "Port.h"
+
+// emitters
+#include "IROptimizer.h"
 
 // utilities
 #include "Exception.h"
@@ -31,13 +33,13 @@ namespace ell
 namespace model
 {
     IRCompiledMap::IRCompiledMap(IRCompiledMap&& other)
-        : CompiledMap(std::move(other), other._functionName), _moduleName(std::move(other._moduleName)), _module(std::move(other._module)), _executionEngine(std::move(other._executionEngine)), _computeFunctionDefined(false)
+        : CompiledMap(std::move(other), other._functionName, other._compilerOptions), _moduleName(std::move(other._moduleName)), _module(std::move(other._module)), _executionEngine(std::move(other._executionEngine)), _verifyJittedModule(other._verifyJittedModule), _computeFunctionDefined(false)
     {
     }
 
     // private constructor:
-    IRCompiledMap::IRCompiledMap(Map map, const std::string& functionName, std::unique_ptr<emitters::IRModuleEmitter> module)
-        : CompiledMap(std::move(map), functionName), _module(std::move(module)), _computeFunctionDefined(false)
+    IRCompiledMap::IRCompiledMap(Map map, const std::string& functionName, const MapCompilerOptions& options, std::unique_ptr<emitters::IRModuleEmitter> module, bool verifyJittedModule)
+        : CompiledMap(std::move(map), functionName, options), _module(std::move(module)), _verifyJittedModule(verifyJittedModule), _computeFunctionDefined(false)
     {
         _moduleName = _module->GetModuleName();
     }
@@ -58,7 +60,7 @@ namespace model
         if (!_executionEngine)
         {
             auto moduleClone = std::unique_ptr<llvm::Module>(llvm::CloneModule(_module->GetLLVMModule()));
-            _executionEngine = std::make_unique<emitters::IRExecutionEngine>(std::move(moduleClone));
+            _executionEngine = std::make_unique<emitters::IRExecutionEngine>(std::move(moduleClone), _verifyJittedModule);
         }
     }
 
@@ -72,28 +74,28 @@ namespace model
     {
         switch (GetInput(0)->GetOutputPort().GetType())
         {
-            case model::Port::PortType::boolean:
-                SetComputeFunctionForInputType<bool>();
-                break;
+        case model::Port::PortType::boolean:
+            SetComputeFunctionForInputType<bool>();
+            break;
 
-            case model::Port::PortType::integer:
-                SetComputeFunctionForInputType<int>();
-                break;
+        case model::Port::PortType::integer:
+            SetComputeFunctionForInputType<int>();
+            break;
 
-            case model::Port::PortType::bigInt:
-                SetComputeFunctionForInputType<int64_t>();
-                break;
+        case model::Port::PortType::bigInt:
+            SetComputeFunctionForInputType<int64_t>();
+            break;
 
-            case model::Port::PortType::smallReal:
-                SetComputeFunctionForInputType<float>();
-                break;
+        case model::Port::PortType::smallReal:
+            SetComputeFunctionForInputType<float>();
+            break;
 
-            case model::Port::PortType::real:
-                SetComputeFunctionForInputType<double>();
-                break;
+        case model::Port::PortType::real:
+            SetComputeFunctionForInputType<double>();
+            break;
 
-            default:
-                throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
+        default:
+            throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
         }
     }
 
@@ -111,7 +113,7 @@ namespace model
             temp[index] = static_cast<bool>(inputValues[index]);
         }
 
-        std::get<ComputeFunction<bool>>(_computeInputFunction)((bool*)temp.data());
+        std::get<ComputeFunction<bool>>(_computeInputFunction)(GetContext(), (bool*)temp.data());
     }
 
     void IRCompiledMap::SetNodeInput(model::InputNode<int>* node, const std::vector<int>& inputValues) const
@@ -123,7 +125,7 @@ namespace model
             throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
         }
 
-        std::get<ComputeFunction<int>>(_computeInputFunction)(inputValues.data());
+        std::get<ComputeFunction<int>>(_computeInputFunction)(GetContext(), inputValues.data());
     }
 
     void IRCompiledMap::SetNodeInput(model::InputNode<int64_t>* node, const std::vector<int64_t>& inputValues) const
@@ -135,7 +137,7 @@ namespace model
             throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
         }
 
-        std::get<ComputeFunction<int64_t>>(_computeInputFunction)(inputValues.data());
+        std::get<ComputeFunction<int64_t>>(_computeInputFunction)(GetContext(), inputValues.data());
     }
 
     void IRCompiledMap::SetNodeInput(model::InputNode<float>* node, const std::vector<float>& inputValues) const
@@ -147,7 +149,7 @@ namespace model
             throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
         }
 
-        std::get<ComputeFunction<float>>(_computeInputFunction)(inputValues.data());
+        std::get<ComputeFunction<float>>(_computeInputFunction)(GetContext(), inputValues.data());
     }
 
     void IRCompiledMap::SetNodeInput(model::InputNode<double>* node, const std::vector<double>& inputValues) const
@@ -157,8 +159,12 @@ namespace model
         {
             throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
         }
+        if (inputValues.empty()) 
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::nullReference);
+        }
 
-        std::get<ComputeFunction<double>>(_computeInputFunction)(inputValues.data());
+        std::get<ComputeFunction<double>>(_computeInputFunction)(GetContext(), inputValues.data());
     }
 
     std::vector<bool> IRCompiledMap::ComputeBoolOutput(const model::PortElementsBase& outputs) const
@@ -261,49 +267,6 @@ namespace model
         return s.str();
     }
 
-    void IRCompiledMap::EnsureValidMap()
-    {
-        if (NumInputPorts() != 1)
-        {
-            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Compiled maps must have a single input");
-        }
-
-        if (NumOutputPorts() != 1)
-        {
-            throw utilities::InputException(utilities::InputExceptionErrors::invalidArgument, "Compiled maps must have a single output");
-        }
-
-        // if output isn't a simple port, add an output node to model
-        auto shape = GetOutputShape();
-        auto out = GetOutput(0);
-        if (!out.IsFullPortOutput())
-        {
-            model::OutputNodeBase* outputNode = nullptr;
-            switch (out.GetPortType())
-            {
-                case model::Port::PortType::boolean:
-                    outputNode = GetModel().AddNode<model::OutputNode<bool>>(model::PortElements<bool>(out), shape);
-                    break;
-                case model::Port::PortType::integer:
-                    outputNode = GetModel().AddNode<model::OutputNode<int>>(model::PortElements<int>(out), shape);
-                    break;
-                case model::Port::PortType::bigInt:
-                    outputNode = GetModel().AddNode<model::OutputNode<int64_t>>(model::PortElements<int64_t>(out), shape);
-                    break;
-                case model::Port::PortType::smallReal:
-                    outputNode = GetModel().AddNode<model::OutputNode<float>>(model::PortElements<float>(out), shape);
-                    break;
-                case model::Port::PortType::real:
-                    outputNode = GetModel().AddNode<model::OutputNode<double>>(model::PortElements<double>(out), shape);
-                    break;
-                default:
-                    throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
-            }
-
-            ResetOutput(0, outputNode->GetOutputPort());
-        }
-    }
-
     //
     // Profiling support
     //
@@ -311,92 +274,116 @@ namespace model
     void IRCompiledMap::PrintModelProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_PrintModelProfilingInfo"));
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_PrintModelProfilingInfo"));
         fn();
     }
 
     PerformanceCounters* IRCompiledMap::GetModelPerformanceCounters()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<PerformanceCounters* (*)()>(jitter.GetFunctionAddress(_moduleName+"_GetModelPerformanceCounters"));
+        auto fn = reinterpret_cast<PerformanceCounters* (*)()>(jitter.GetFunctionAddress(_moduleName + "_GetModelPerformanceCounters"));
         return fn();
     }
 
     void IRCompiledMap::ResetModelProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_ResetModelProfilingInfo"));
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_ResetModelProfilingInfo"));
         fn();
     }
 
     void IRCompiledMap::PrintNodeProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_PrintNodeProfilingInfo")); // TODO: hide this reinterpret_cast in a templated method of IRExecutionEngine
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_PrintNodeProfilingInfo")); // TODO: hide this reinterpret_cast in a templated method of IRExecutionEngine
         fn();
     }
 
     void IRCompiledMap::ResetNodeProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_ResetNodeProfilingInfo"));
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_ResetNodeProfilingInfo"));
         fn();
     }
 
     int IRCompiledMap::GetNumProfiledNodes()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<int (*)()>(jitter.GetFunctionAddress(_moduleName+"_GetNumNodes"));
+        auto fn = reinterpret_cast<int (*)()>(jitter.GetFunctionAddress(_moduleName + "_GetNumNodes"));
         return fn();
     }
 
     NodeInfo* IRCompiledMap::GetNodeInfo(int nodeIndex)
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<NodeInfo* (*)(int)>(jitter.GetFunctionAddress(_moduleName+"_GetNodeInfo"));
+        auto fn = reinterpret_cast<NodeInfo* (*)(int)>(jitter.GetFunctionAddress(_moduleName + "_GetNodeInfo"));
         return fn(nodeIndex);
     }
 
     PerformanceCounters* IRCompiledMap::GetNodePerformanceCounters(int nodeIndex)
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<PerformanceCounters* (*)(int)>(jitter.GetFunctionAddress(_moduleName+"_GetNodePerformanceCounters"));
+        auto fn = reinterpret_cast<PerformanceCounters* (*)(int)>(jitter.GetFunctionAddress(_moduleName + "_GetNodePerformanceCounters"));
         return fn(nodeIndex);
     }
 
     void IRCompiledMap::PrintNodeTypeProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_PrintNodeTypeProfilingInfo"));
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_PrintNodeTypeProfilingInfo"));
         fn();
     }
 
     void IRCompiledMap::ResetNodeTypeProfilingInfo()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName+"_ResetNodeTypeProfilingInfo"));
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_ResetNodeTypeProfilingInfo"));
         fn();
     }
 
     int IRCompiledMap::GetNumProfiledNodeTypes()
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<int (*)()>(jitter.GetFunctionAddress(_moduleName+"_GetNumNodeTypes"));
+        auto fn = reinterpret_cast<int (*)()>(jitter.GetFunctionAddress(_moduleName + "_GetNumNodeTypes"));
         return fn();
     }
 
     NodeInfo* IRCompiledMap::GetNodeTypeInfo(int nodeIndex)
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<NodeInfo* (*)(int)>(jitter.GetFunctionAddress(_moduleName+"_GetNodeTypeInfo"));
+        auto fn = reinterpret_cast<NodeInfo* (*)(int)>(jitter.GetFunctionAddress(_moduleName + "_GetNodeTypeInfo"));
         return fn(nodeIndex);
     }
 
     PerformanceCounters* IRCompiledMap::GetNodeTypePerformanceCounters(int nodeIndex)
     {
         auto& jitter = GetJitter();
-        auto fn = reinterpret_cast<PerformanceCounters* (*)(int)>(jitter.GetFunctionAddress(_moduleName+"_GetNodeTypePerformanceCounters"));
+        auto fn = reinterpret_cast<PerformanceCounters* (*)(int)>(jitter.GetFunctionAddress(_moduleName + "_GetNodeTypePerformanceCounters"));
         return fn(nodeIndex);
+    }
+
+    //
+    // Low-level region profiling support
+    //
+    int IRCompiledMap::GetNumProfileRegions()
+    {
+        auto& jitter = GetJitter();
+        auto fn = reinterpret_cast<int (*)()>(jitter.GetFunctionAddress(_moduleName + "_GetNumProfileRegions"));
+        return fn();
+    }
+
+    emitters::ProfileRegionInfo* IRCompiledMap::GetRegionProfilingInfo(int regionIndex)
+    {
+        auto& jitter = GetJitter();
+        auto fn = reinterpret_cast<ProfileRegionInfo* (*)(int)>(jitter.GetFunctionAddress(_moduleName + "_GetRegionProfilingInfo"));
+        return fn(regionIndex);
+    }
+
+    void IRCompiledMap::ResetRegionProfilingInfo()
+    {
+        auto& jitter = GetJitter();
+        auto fn = reinterpret_cast<void (*)()>(jitter.GetFunctionAddress(_moduleName + "_ResetRegionProfilingInfo"));
+        fn();
     }
 }
 }

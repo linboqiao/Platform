@@ -59,6 +59,14 @@ namespace nodes
         return true;
     }
 
+    template <typename ValueType, template <typename> class ActivationFunctionType>
+    void RecurrentLayerNode<ValueType, ActivationFunctionType>::Copy(model::ModelTransformer& transformer) const
+    {
+        auto newPortElements = transformer.TransformPortElements(this->_input.GetPortElements());
+        auto newNode = transformer.AddNode<RecurrentLayerNode<ValueType, ActivationFunctionType>>(newPortElements, this->_layer);
+        transformer.MapNodeOutput(this->_output, newNode->output);
+    }
+
     //
     // RecurrentNode
     //
@@ -84,7 +92,7 @@ namespace nodes
         auto newInput = transformer.TransformPortElements(_input.GetPortElements());
         auto newHiddenWeights = transformer.TransformPortElements(_hiddenWeights.GetPortElements());
         auto newHiddenBias = transformer.TransformPortElements(_hiddenBias.GetPortElements());
-        auto newNode = transformer.AddNode<RecurrentNode>(newInput, newHiddenWeights, newHiddenBias, _inputMemoryLayout, _outputMemoryLayout);
+        auto newNode = transformer.AddNode<RecurrentNode>(newInput, newHiddenWeights, newHiddenBias, _inputMemoryLayout, GetOutputMemoryLayout());
         transformer.MapNodeOutput(output, newNode->output);
     }
 
@@ -98,49 +106,29 @@ namespace nodes
     template <typename ActivationType>
     void RecurrentNode<ValueType, ActivationFunctionType>::ApplyActivation(emitters::IRFunctionEmitter& function, ActivationType& activationFunction, llvm::Value* data, size_t dataLength)
     {
-        auto forLoop = function.ForLoop();
-        forLoop.Begin(dataLength);
-        {
-            auto i = forLoop.LoadIterationVariable();
+        function.For(dataLength, [data, activationFunction](emitters::IRFunctionEmitter& function, auto i) {
             llvm::Value* inputValue = function.ValueAt(data, i);
             llvm::Value* x = activationFunction.Compile(function, inputValue);
             function.SetValueAt(data, i, x);
-        }
-        forLoop.End();
+        });
     }
 
     template <typename ValueType, template <typename> class ActivationFunctionType>
-    void RecurrentNode<ValueType, ActivationFunctionType>::ApplySoftmax(emitters::IRFunctionEmitter& function, llvm::Value* data, size_t dataLength)
+    void RecurrentNode<ValueType, ActivationFunctionType>::ApplySoftmax(emitters::IRFunctionEmitter& function, llvm::Value* dataValue, size_t dataLength)
     {
-        const auto plusFloat = emitters::TypedOperator::addFloat;
-        const auto divideFloat = emitters::TypedOperator::divideFloat;
-        auto expFunc = function.GetModule().GetRuntime().GetExpFunction<ValueType>();
-
-        llvm::AllocaInst* sum = function.Variable(emitters::GetVariableType<ValueType>(), 1);
+        auto data = function.LocalArray(dataValue);
+        auto sum = function.LocalArray(function.Variable(emitters::GetVariableType<ValueType>(), 1));
         function.SetValueAt(sum, 0, function.Literal<ValueType>(0.0));
 
-        auto forLoop = function.ForLoop();
-        forLoop.Begin(dataLength);
-        {
-            auto i = forLoop.LoadIterationVariable();
-            llvm::Value* inputValue = function.ValueAt(data, i);
+        function.For(dataLength, [sum, data](emitters::IRFunctionEmitter& function, auto i) {
+            auto expInput = emitters::Exp(data[i]);
+            sum[0] = sum[0] + expInput;
+            data[i] = expInput;
+        });
 
-            auto expInput = function.Call(expFunc, { inputValue });
-            auto addToSum = function.Operator(plusFloat, function.ValueAt(sum, 0), expInput);
-            function.SetValueAt(sum, 0, addToSum);
-            function.SetValueAt(data, i, expInput);
-        }
-        forLoop.End();
-
-        auto forLoop2 = function.ForLoop();
-        forLoop2.Begin(dataLength);
-        {
-            auto i = forLoop2.LoadIterationVariable();
-            llvm::Value* inputValue = function.ValueAt(data, i);
-            auto expDivSum = function.Operator(divideFloat, inputValue, function.ValueAt(sum, 0));
-            function.SetValueAt(data, i, expDivSum);
-        }
-        forLoop2.End();
+        function.For(dataLength, [sum, data](emitters::IRFunctionEmitter& function, auto i) {
+            data[i] = data[i] / sum[0];
+        });
     }
 
     template <typename ValueType, template <typename> class ActivationFunctionType>

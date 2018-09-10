@@ -62,6 +62,13 @@ namespace nodes
         /// <summary> Indicates if this node is able to compile itself to code. </summary>
         bool IsCompilable(const model::MapCompiler* compiler) const override { return true; }
 
+        using BaseType::GetLayer;
+
+        /// <summary> Makes a copy of this node into the model being constructed by the transformer </summary>
+        ///
+        /// <param name="transformer"> The `ModelTransformer` object currently creating a new model </param>
+        void Copy(model::ModelTransformer& transformer) const override;
+
     protected:
         template <typename PoolingFunctionT>
         llvm::Value* GetPoolingWindowValue(emitters::IRFunctionEmitter& function,
@@ -73,12 +80,11 @@ namespace nodes
                                            llvm::Value* inputColumn,
                                            llvm::Value* inputChannel,
                                            llvm::Value* inputBuffer,
-                                           const model::Shape& inputIncrement,
+                                           const model::MemoryShape& inputIncrement,
                                            PoolingFunctionT& poolingFunction);
 
         void Compile(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function) override;
         using BaseType::HasState;
-        using BaseType::GetLayer;
     };
 }
 }

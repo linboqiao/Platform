@@ -58,6 +58,18 @@ namespace common
             true);
 
         parser.AddOption(
+            convolutionMethod,
+            "convolutionMethod",
+            "",
+            "Set the preferred convolution method",
+            { { "unrolled", PreferredConvolutionMethod::unrolled },
+              { "simple", PreferredConvolutionMethod::simple },
+              { "diagonal", PreferredConvolutionMethod::diagonal },
+              { "winograd", PreferredConvolutionMethod::winograd },
+              { "auto", PreferredConvolutionMethod::automatic } },
+            "auto");
+
+        parser.AddOption(
             enableVectorization,
             "vectorize",
             "vec",
@@ -143,6 +155,16 @@ namespace common
             "",
             "A string describing target-specific features to enable or disable (these are LLVM attributes, in the format the llc -mattr option uses)",
             "");
+
+        parser.AddOption(
+            positionIndependentCode,
+            "positionIndependentCode",
+            "pic",
+            "Generate position independent code (equivalent to -fPIC)",
+            { { "auto", utilities::Optional<bool>() },
+              { "true", utilities::Optional<bool>(true) },
+              { "false", utilities::Optional<bool>(false) } },
+            "auto");
     }
 
     model::MapCompilerOptions MapCompilerArguments::GetMapCompilerOptions(const std::string& modelName) const
@@ -175,13 +197,16 @@ namespace common
 
         settings.moduleName = namespacePrefix;
         settings.mapFunctionName = functionName;
-        settings.optimizerSettings.fuseLinearFunctionNodes = fuseLinearOperations;
         settings.compilerSettings.optimize = optimize;
         settings.compilerSettings.useBlas = useBlas;
         settings.compilerSettings.allowVectorInstructions = enableVectorization;
         settings.compilerSettings.parallelize = parallelize;
         settings.compilerSettings.vectorWidth = vectorWidth;
+        settings.optimizerSettings.fuseLinearFunctionNodes = fuseLinearOperations;
+        settings.optimizerSettings.preferredConvolutionMethod = convolutionMethod;
         settings.profile = profile;
+        settings.compilerSettings.profile = profile;
+        settings.compilerSettings.positionIndependentCode = positionIndependentCode;
 
         if (target != "")
         {

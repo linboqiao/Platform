@@ -56,7 +56,8 @@ using PaddingParameters = ell::predictors::neural::PaddingParameters;
         height: height of the input
         numBoxesPerCell: number of possible bounding boxes per cell
         numClasses: number of classes that can be detected
-        numCoordinates: number of coordinates per region. Currently, only supported value is 4
+        numAnchors: Number of anchors per region. Typically this is 4
+        applySoftmax: Specifies whether softmax should be applied to class probabilites
 %}
 
 // Include the C++ code to be wrapped
@@ -98,6 +99,7 @@ using PaddingParameters = ell::predictors::neural::PaddingParameters;
 %template(FloatConvolutionalLayer) ell::api::predictors::neural::ConvolutionalLayer<float>;
 %template(FloatFullyConnectedLayer) ell::api::predictors::neural::FullyConnectedLayer<float>;
 %template(FloatGRULayer) ell::api::predictors::neural::GRULayer<float>;
+%template(FloatLeakyReLUActivationLayer) ell::api::predictors::neural::LeakyReLUActivationLayer<float>;
 %template(FloatLSTMLayer) ell::api::predictors::neural::LSTMLayer<float>;
 %template(FloatNeuralNetworkPredictor) ell::api::predictors::NeuralNetworkPredictor<float>;
 %template(FloatPoolingLayer) ell::api::predictors::neural::PoolingLayer<float>;
@@ -113,6 +115,7 @@ using PaddingParameters = ell::predictors::neural::PaddingParameters;
 %template(DoubleConvolutionalLayer) ell::api::predictors::neural::ConvolutionalLayer<double>;
 %template(DoubleFullyConnectedLayer) ell::api::predictors::neural::FullyConnectedLayer<double>;
 %template(DoubleGRULayer) ell::api::predictors::neural::GRULayer<double>;
+%template(DoubleLeakyReLUActivationLayer) ell::api::predictors::neural::LeakyReLUActivationLayer<double>;
 %template(DoubleLSTMLayer) ell::api::predictors::neural::LSTMLayer<double>;
 %template(DoubleNeuralNetworkPredictor) ell::api::predictors::NeuralNetworkPredictor<double>;
 %template(DoublePoolingLayer) ell::api::predictors::neural::PoolingLayer<double>;

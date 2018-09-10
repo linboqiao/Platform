@@ -61,6 +61,11 @@ namespace nodes
         /// <summary> Indicates if this node is able to compile itself to code. </summary>
         bool IsCompilable(const model::MapCompiler* compiler) const override { return false; }
 
+        /// <summary> Makes a copy of this node into the model being constructed by the transformer </summary>
+        ///
+        /// <param name="transformer"> The `ModelTransformer` object currently creating a new model </param>
+        void Copy(model::ModelTransformer& transformer) const override;
+
     protected:
         bool Refine(model::ModelTransformer& transformer) const override;
     };
@@ -93,10 +98,10 @@ namespace nodes
         /// <param name="inputMemoryLayout"> The layout of the input data. </param>
         /// <param name="outputMemoryLayout"> The layout of the output data. </param>
         RecurrentNode(const model::PortElements<ValueType>& input,
-                       const model::PortElements<ValueType>& hiddenWeights,
-                       const model::PortElements<ValueType>& hiddenBias,
-                       const model::PortMemoryLayout& inputMemoryLayout,
-                       const model::PortMemoryLayout& outputMemoryLayout);
+                      const model::PortElements<ValueType>& hiddenWeights,
+                      const model::PortElements<ValueType>& hiddenBias,
+                      const model::PortMemoryLayout& inputMemoryLayout,
+                      const model::PortMemoryLayout& outputMemoryLayout);
 
         /// <summary> Gets information about the input memory layout </summary>
         ///
@@ -106,7 +111,16 @@ namespace nodes
         /// <summary> Gets information about the output memory layout </summary>
         ///
         /// <returns> The layout of the output data. </returns>
-        const model::PortMemoryLayout& GetOutputMemoryLayout() const { return _outputMemoryLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const { return _output.GetMemoryLayout(); }
+
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
+        ///
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         /// <summary> Gets the name of this type (for serialization). </summary>
         ///
@@ -148,13 +162,11 @@ namespace nodes
         model::OutputPort<ValueType> _output;
 
         model::PortMemoryLayout _inputMemoryLayout;
-        model::PortMemoryLayout _outputMemoryLayout;
 
         void ApplySoftmax(emitters::IRFunctionEmitter& function, llvm::Value* data, size_t dataLength);
 
         template <typename ActivationType>
         void ApplyActivation(emitters::IRFunctionEmitter& function, ActivationType& activationFunction, llvm::Value* data, size_t dataLength);
     };
-
 }
 }

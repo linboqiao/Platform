@@ -83,11 +83,11 @@ namespace emitters
     llvm::Type* IRPosixRuntime::GetPthreadType()
     {
         auto& targetDevice = _module.GetCompilerOptions().targetDevice;
-        if(targetDevice.IsLinux())
+        if (targetDevice.IsLinux())
         {
             return GetPointerSizedIntType();
         }
-        else if(targetDevice.IsMacOS())
+        else if (targetDevice.IsMacOS())
         {
             return GetPointerSizedIntType();
         }
@@ -101,42 +101,52 @@ namespace emitters
     {
         auto& context = _module.GetLLVMContext();
         auto int8Type = llvm::Type::getInt8Ty(context);
+        auto int16Type = llvm::Type::getInt16Ty(context);
         auto int32Type = llvm::Type::getInt32Ty(context);
         auto int64Type = llvm::Type::getInt64Ty(context);
 
         auto& targetDevice = _module.GetCompilerOptions().targetDevice;
-        if(targetDevice.IsLinux())
+        if (targetDevice.IsLinux())
         {
             auto triple = targetDevice.triple.empty() ? llvm::sys::getDefaultTargetTriple() : targetDevice.triple;
 
-            if(triple.find("armv7") != std::string::npos)
+            if ((triple.find("armv6") != std::string::npos) || (triple.find("armv7") != std::string::npos))
             {
-                // Raspbian (32-bit)
+                // Raspbian (32-bit, pi0 or pi3)
                 // %union.pthread_mutex_t = type { %"struct.(anonymous union)::__pthread_mutex_s" }
                 // %"struct.(anonymous union)::__pthread_mutex_s" = type { i32, i32, i32, i32, i32, %union.anon }
                 // %union.anon = type { i32 }
-                return _module.GetOrCreateStruct("pthread_mutex_t", {int32Type, int32Type, int32Type, int32Type, int32Type, int32Type});
+                return _module.GetOrCreateStruct("pthread_mutex_t", { int32Type, int32Type, int32Type, int32Type, int32Type, int32Type });
             }
-            else if(triple.find("aarch64") != std::string::npos)
+            else if (triple.find("aarch64") != std::string::npos)
             {
                 // Linaro (64-bit)
                 // %union.pthread_mutex_t = type { %"struct.(anonymous union)::__pthread_mutex_s", [8 x i8] }
                 // %"struct.(anonymous union)::__pthread_mutex_s" = type { i32, i32, i32, i32, i32, i32, %struct.__pthread_internal_list }
                 // %struct.__pthread_internal_list = type { %struct.__pthread_internal_list*, %struct.__pthread_internal_list* }
+                auto internalListType = _module.GetAnonymousStructType({ GetPointerSizedIntType(), GetPointerSizedIntType() });
+                return _module.GetOrCreateStruct("pthread_mutex_t", { int32Type, int32Type, int32Type, int32Type, int32Type, int32Type, internalListType });
+            }
+            else if (triple.find("x86_64") != std::string::npos)
+            {
+                // Linux 64-bit generic
+                // %union.pthread_mutex_t = type { %"struct.(anonymous union)::__pthread_mutex_s" }
+                // %"struct.(anonymous union)::__pthread_mutex_s" = type { i32, i32, i32, i32, i32, i16, i16, %struct.__pthread_internal_list }
+                // %struct.__pthread_internal_list = type { %struct.__pthread_internal_list*, %struct.__pthread_internal_list* }
                 auto internalListType = _module.GetAnonymousStructType({GetPointerSizedIntType(), GetPointerSizedIntType()});
-                return _module.GetOrCreateStruct("pthread_mutex_t", {int32Type, int32Type, int32Type, int32Type, int32Type, int32Type, internalListType});
+                return _module.GetOrCreateStruct("pthread_mutex_t", {int32Type, int32Type, int32Type, int32Type, int32Type, int16Type, int16Type, internalListType});
             }
             else
             {
                 assert(false && "Unknown Linux architecture");
-                auto internalListType = _module.GetAnonymousStructType({GetPointerSizedIntType(), GetPointerSizedIntType()});
-                return _module.GetOrCreateStruct("pthread_mutex_t", {int32Type, int32Type, int32Type, int32Type, int32Type, int32Type, internalListType});
+                auto internalListType = _module.GetAnonymousStructType({ GetPointerSizedIntType(), GetPointerSizedIntType() });
+                return _module.GetOrCreateStruct("pthread_mutex_t", { int32Type, int32Type, int32Type, int32Type, int32Type, int32Type, internalListType });
             }
         }
-        else if(targetDevice.IsMacOS())
+        else if (targetDevice.IsMacOS())
         {
             // %struct._opaque_pthread_mutex_t = type { i64, [56 x i8] }
-            return _module.GetOrCreateStruct("pthread_mutex_t", {int64Type, llvm::ArrayType::get(int8Type, 56)});
+            return _module.GetOrCreateStruct("pthread_mutex_t", { int64Type, llvm::ArrayType::get(int8Type, 56) });
         }
         else
         {
@@ -154,34 +164,41 @@ namespace emitters
         auto int64Type = llvm::Type::getInt64Ty(context);
 
         auto& targetDevice = _module.GetCompilerOptions().targetDevice;
-        if(targetDevice.IsLinux())
+        if (targetDevice.IsLinux())
         {
             auto triple = targetDevice.triple.empty() ? llvm::sys::getDefaultTargetTriple() : targetDevice.triple;
 
-            if(triple.find("armv7") != std::string::npos)
+            if ((triple.find("armv6") != std::string::npos) || (triple.find("armv7") != std::string::npos))
             {
-                // Raspbian (32-bit)
+                // Raspbian (32-bit, pi0 or pi3)
                 // %union.pthread_cond_t = type { %struct.anon }
                 // %struct.anon = type { i32, i32, i64, i64, i64, i8*, i32, i32 }
-                return _module.GetOrCreateStruct("pthread_cond_t", {int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type});
+                return _module.GetOrCreateStruct("pthread_cond_t", { int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type });
             }
-            else if(triple.find("aarch64") != std::string::npos)
+            else if (triple.find("aarch64") != std::string::npos)
             {
                 // Linaro (64-bit)
                 // %union.pthread_cond_t = type { %struct.anon }
                 // %struct.anon = type { i32, i32, i64, i64, i64, i8*, i32, i32 }
+                return _module.GetOrCreateStruct("pthread_cond_t", { int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type });
+            }
+            else if (triple.find("x86_64") != std::string::npos)
+            {
+                // Linux 64-bit generic
+                // %union.pthread_cond_t = type { %struct.anon }
+                // % struct.anon = type { i32, i32, i64, i64, i64, i8*, i32, i32 }
                 return _module.GetOrCreateStruct("pthread_cond_t", {int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type});
             }
             else
             {
                 assert(false && "Unknown Linux architecture");
-                return _module.GetOrCreateStruct("pthread_cond_t", {int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type});
+                return _module.GetOrCreateStruct("pthread_cond_t", { int32Type, int32Type, int64Type, int64Type, int64Type, int8PtrType, int32Type, int32Type });
             }
         }
-        else if(targetDevice.IsMacOS())
+        else if (targetDevice.IsMacOS())
         {
             // %struct._opaque_pthread_cond_t = type { i64, [40 x i8] }
-            return _module.GetOrCreateStruct("pthread_cond_t", {int64Type, llvm::ArrayType::get(int8Type, 40)});
+            return _module.GetOrCreateStruct("pthread_cond_t", { int64Type, llvm::ArrayType::get(int8Type, 40) });
         }
         else
         {
@@ -196,16 +213,16 @@ namespace emitters
         auto int32Type = llvm::Type::getInt32Ty(context);
 
         auto& targetDevice = _module.GetCompilerOptions().targetDevice;
-        if(targetDevice.IsLinux())
+        if (targetDevice.IsLinux())
         {
             auto triple = targetDevice.triple.empty() ? llvm::sys::getDefaultTargetTriple() : targetDevice.triple;
 
-            if(triple.find("armv7") != std::string::npos)
+            if ((triple.find("armv6") != std::string::npos) || (triple.find("armv7") != std::string::npos))
             {
-                // Raspbian (32-bit)
+                // Raspbian (32-bit, pi0 or pi3)
                 return int32Type;
             }
-            else if(triple.find("aarch64") != std::string::npos)
+            else if (triple.find("aarch64") != std::string::npos)
             {
                 // Linaro (64-bit)
                 return int32Type;
@@ -216,10 +233,10 @@ namespace emitters
                 return int32Type;
             }
         }
-        else if(targetDevice.IsMacOS())
+        else if (targetDevice.IsMacOS())
         {
             assert(false && "pthread_spinlock not available on macOS target");
-            return _module.GetAnonymousStructType({int32Type});
+            return _module.GetAnonymousStructType({ int32Type });
         }
         else
         {
@@ -453,7 +470,6 @@ namespace emitters
         auto spinlockPtrType = GetPthreadSpinlockType()->getPointerTo();
         auto functionType = llvm::FunctionType::get(intType, { spinlockPtrType }, false);
         return static_cast<llvm::Function*>(_module.GetLLVMModule()->getOrInsertFunction("pthread_spin_trylock", functionType));
-
     }
 
     llvm::Function* IRPosixRuntime::GetPthreadSpinUnlockFunction()
@@ -477,7 +493,6 @@ namespace emitters
         auto functionType = llvm::FunctionType::get(intType, { spinlockPtrType }, false);
         return static_cast<llvm::Function*>(_module.GetLLVMModule()->getOrInsertFunction("pthread_spin_destroy", functionType));
     }
-
 
     // Signature: int pthread_once(pthread_once_t * once_init, void (*init_routine)(void)));
 }

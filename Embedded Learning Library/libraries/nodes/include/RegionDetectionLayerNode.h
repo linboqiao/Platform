@@ -48,6 +48,11 @@ namespace nodes
         /// <summary> Indicates if this node is able to compile itself to code. </summary>
         bool IsCompilable(const model::MapCompiler* compiler) const override { return false; }
 
+        /// <summary> Makes a copy of this node into the model being constructed by the transformer </summary>
+        ///
+        /// <param name="transformer"> The `ModelTransformer` object currently creating a new model </param>
+        void Copy(model::ModelTransformer& transformer) const override;
+
     protected:
         bool Refine(model::ModelTransformer& transformer) const override;
     };
@@ -71,7 +76,16 @@ namespace nodes
 
         const model::PortMemoryLayout& GetInputMemoryLayout() const { return _inputMemoryLayout; }
 
-        const model::PortMemoryLayout& GetOutputMemoryLayout() const { return _outputMemoryLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const { return _output.GetMemoryLayout(); }
+
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
+        ///
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         static std::string GetTypeName() { return utilities::GetCompositeTypeName<ValueType>("RegionDetectionNode"); }
 
@@ -107,7 +121,6 @@ namespace nodes
         model::OutputPort<ValueType> _output;
 
         model::PortMemoryLayout _inputMemoryLayout;
-        model::PortMemoryLayout _outputMemoryLayout;
     };
 }
 }

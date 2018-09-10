@@ -13,9 +13,6 @@
 #include "OutputPort.h"
 #include "Port.h"
 
-// math
-#include "Tensor.h"
-
 // utilities
 #include "ArchiveVersion.h"
 #include "TypeName.h"
@@ -28,8 +25,6 @@ namespace ell
 {
 namespace model
 {
-    using InputShape = ell::math::TensorShape;
-
     /// <summary> Base class for a node that represents an input to the system. </summary>
     class InputNodeBase : public CompilableNode
     {
@@ -52,23 +47,37 @@ namespace model
         /// <summary> Gets the output shape </summary>
         ///
         /// <returns> The output shape </returns>
-        InputShape GetShape() const { return _shape; }
+        MemoryShape GetShape() const;
+
+        /// <summary> Gets the output memory layout </summary>
+        ///
+        /// <returns> The output memory layout </returns>
+        PortMemoryLayout GetMemoryLayout() const;
+
+        /// <summary> Attempts to set the memory layout order of all the output ports </summary>
+        ///
+        /// <param name="order"> The memory layout order to be applied to all the output ports </summary>
+        /// <returns> If the node supports the output memory layout order, true, else false </returns>
+        bool TrySetOutputLayout(const utilities::DimensionOrder& order) override
+        {
+            return _outputBase.GetMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
     protected:
-        InputNodeBase(OutputPortBase& output, InputShape shape);
+        InputNodeBase(OutputPortBase& output);
 
         // Constructor for derived classes that need to set the input port on CompilableNode.
-        InputNodeBase(InputPortBase& input, OutputPortBase& output, InputShape shape);
+        InputNodeBase(InputPortBase& input, OutputPortBase& output);
 
         bool ShouldCompileInline() const override { return true; }
         bool HasState() const override { return false; }
-        void SetShape(const InputShape& shape) { _shape = shape; } // STYLE discrepancy
-        ell::utilities::ArchiveVersion GetArchiveVersion() const override;
+        void SetShape(const MemoryShape& shape);
+        void SetMemoryLayout(const PortMemoryLayout& layout);
+        utilities::ArchiveVersion GetArchiveVersion() const override;
         bool CanReadArchiveVersion(const utilities::ArchiveVersion& version) const override;
 
     private:
         OutputPortBase& _outputBase;
-        InputShape _shape;
     };
 
     /// <summary> Base class for a node that represents a source to the system. </summary>
@@ -88,8 +97,8 @@ namespace model
     protected:
         // Note: Source nodes still receive timestamps as input, even though data is retrieved through callbacks.
         // Therefore, they have input ports.
-        SourceNodeBase(InputPortBase& input, OutputPortBase& output, InputShape shape, const std::string& callbackName)
-            : InputNodeBase(input, output, shape), _callbackName(callbackName)
+        SourceNodeBase(InputPortBase& input, OutputPortBase& output, const std::string& callbackName)
+            : InputNodeBase(input, output), _callbackName(callbackName)
         {
         }
 

@@ -30,7 +30,6 @@
 #include "TypeName.h"
 
 // stl
-#include <cassert>
 #include <functional>
 #include <numeric>
 #include <string>
@@ -238,11 +237,20 @@ namespace nodes
         /// <summary> Returns the number of secondary input ports. </summary>
         virtual int NumSecondaryInputs() const = 0;
 
-        const model::PortMemoryLayout& GetInputLayout() const { return _inputLayout; }
-        const model::PortMemoryLayout& GetOutputLayout() const { return _outputLayout; }
+        const model::PortMemoryLayout& GetInputMemoryLayout() const { return _inputLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const;
+
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
+        ///
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         size_t GetBroadcastDimension() const { return _broadcastDimension; }
-        size_t NumPrimaryInputDimensions() const { return _inputLayout.NumDimensions(); }
+        size_t NumPrimaryInputDimensions() const { return GetInputMemoryLayout().NumDimensions(); }
 
     protected:
         BroadcastFunctionNode(const std::vector<model::InputPortBase*>& inputs, const std::vector<model::OutputPortBase*>& outputs);
@@ -267,7 +275,7 @@ namespace nodes
 
         // Helpers for generating nested loops to visit all input/output values
         void ComputeDimensionLoop(size_t dimension, std::vector<ValueType>& output, size_t prevInputDimensionOffset, size_t prevOutputDimensionOffset, std::vector<ValueType>& secondaryValues) const;
-        void EmitComputeDimensionLoop(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function, size_t dimension, llvm::Value* begin, llvm::Value* end, llvm::Value* primaryInput, const std::vector<llvm::Value*>& secondaryInputs, llvm::Value* output, llvm::Value* prevInputDimensionOffset, llvm::Value* prevOutputDimensionOffset, std::vector<llvm::Value*>& secondaryValues) const;
+        void EmitComputeDimensionLoop(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function, size_t dimension, emitters::IRLocalScalar begin, emitters::IRLocalScalar end, llvm::Value* primaryInput, const std::vector<llvm::Value*>& secondaryInputs, llvm::Value* output, emitters::IRLocalScalar prevInputDimensionOffset, emitters::IRLocalScalar prevOutputDimensionOffset, std::vector<llvm::Value*>& secondaryValues) const;
         emitters::IRFunctionEmitter GetTaskFunction(model::IRMapCompiler& compiler, emitters::IRFunctionEmitter& function, const emitters::LLVMTypeList& portTypes) const;
 
         void WriteToArchive(utilities::Archiver& archiver) const override;
@@ -277,7 +285,6 @@ namespace nodes
 
     private:
         model::PortMemoryLayout _inputLayout;
-        model::PortMemoryLayout _outputLayout;
         size_t _broadcastDimension = 0;
 
         FunctionType _function;
@@ -331,8 +338,8 @@ namespace nodes
         /// <returns> The name of this type. </returns>
         std::string GetRuntimeTypeName() const override { return GetTypeName(); }
 
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputLayout;
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputMemoryLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputMemoryLayout;
         using BroadcastFunctionNode<ValueType, FunctionType>::GetBroadcastDimension;
         using BroadcastFunctionNode<ValueType, FunctionType>::NumPrimaryInputDimensions;
 
@@ -411,8 +418,8 @@ namespace nodes
         /// <returns> The name of this type. </returns>
         std::string GetRuntimeTypeName() const override { return GetTypeName(); }
 
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputLayout;
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputMemoryLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputMemoryLayout;
         using BroadcastFunctionNode<ValueType, FunctionType>::GetBroadcastDimension;
         using BroadcastFunctionNode<ValueType, FunctionType>::NumPrimaryInputDimensions;
 
@@ -493,8 +500,8 @@ namespace nodes
         /// <returns> The name of this type. </returns>
         std::string GetRuntimeTypeName() const override { return GetTypeName(); }
 
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputLayout;
-        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetInputMemoryLayout;
+        using BroadcastFunctionNode<ValueType, FunctionType>::GetOutputMemoryLayout;
         using BroadcastFunctionNode<ValueType, FunctionType>::GetBroadcastDimension;
         using BroadcastFunctionNode<ValueType, FunctionType>::NumPrimaryInputDimensions;
 

@@ -241,6 +241,40 @@ class Utilities:
         return nodes
 
     @staticmethod    
+    def find_parameter_by_name(parameters, name, index=0):
+        for p in parameters:
+            if (p.name == name):
+                return p
+        # Fallback case: Sometimes parameters are renamed.
+        # Convention is to end with the original name e.g.
+        # if weights are normally "W", a renamed weights parameters
+        # is something like "conv2_2.W".
+        for p in parameters:
+            if (p.name.endswith(name)):
+                return p
+        # Parameter is missing, so return None.
+        return None
+
+    @staticmethod    
+    def find_parameter_index_by_name(parameters, name, index=0):
+        for i in range(len(parameters)):
+            if (parameters[i].name == name):
+                return i
+        # Fallback case: Sometimes parameters are renamed.
+        # Convention is to end with the original name e.g.
+        # if weights are normally "W", a renamed weights parameters
+        # is something like "conv2_2.W".
+        for i in range(len(parameters)):
+            if (parameters[i].name.endswith(name)):
+                return i
+        # If no named parameter was found, just return the one at the
+        # specified index
+        if index < len(parameters):
+            return index
+        # Parameter is missing, so return 0.
+        return 0
+
+    @staticmethod    
     def get_uid(obj):
         """
         Returns uid of a cntk node if one exists
@@ -302,8 +336,8 @@ class Utilities:
             pip install graphviz
             pip install pydot_ng
         """
-        text = graph.plot(root, output_file)
-        _logger.info(text)
+        graph.plot(root, output_file)
+        _logger.info("Model graph plotted to: {}".format(output_file))
 
     @staticmethod    
     def dump(obj):

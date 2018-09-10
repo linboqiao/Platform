@@ -110,7 +110,6 @@ namespace neural
         leaky,
         sigmoid,
         tanh,
-        softmax,
         prelu,
         hardSigmoid
     };
@@ -140,6 +139,19 @@ namespace neural
         }
 
         API_READONLY(ell::api::math::Tensor<ElementType> alpha);
+    };
+
+    // Api projection for LeakyReLUActivationLayer
+    template <typename ElementType>
+    class LeakyReLUActivationLayer : public ActivationLayer<ElementType>
+    {
+    public:
+        LeakyReLUActivationLayer(const LayerParameters& layerParameters, ElementType alpha)
+            : ActivationLayer<ElementType>(layerParameters, ActivationType::leaky), _alpha(alpha)
+        {
+        }
+
+        API_READONLY(ElementType _alpha);
     };
 
     // Api projection for BatchNormalizationLayer
@@ -276,14 +288,42 @@ namespace neural
     class LSTMLayer : public Layer<ElementType>
     {
     public:
-        LSTMLayer(const LayerParameters& layerParameters, const ell::api::math::Tensor<ElementType>& weightsTensor)
-            : Layer<ElementType>(layerParameters), weights(weightsTensor.data, weightsTensor.shape.rows, weightsTensor.shape.columns, weightsTensor.shape.channels)
+        LSTMLayer(const LayerParameters& layerParameters,
+            const ell::api::math::Tensor<ElementType>& inputWeightsTensor,
+            const ell::api::math::Tensor<ElementType>& forgetMeWeightsTensor,
+            const ell::api::math::Tensor<ElementType>& candidateWeightsTensor,
+            const ell::api::math::Tensor<ElementType>& outputWeightsTensor,
+            const ell::api::math::Tensor<ElementType>& inputBiasTensor,
+            const ell::api::math::Tensor<ElementType>& forgetMeBiasTensor,
+            const ell::api::math::Tensor<ElementType>& candidateBiasTensor,
+            const ell::api::math::Tensor<ElementType>& outputBiasTensor,
+            ActivationType activation,
+            ActivationType recurrentActivation)
+            : Layer<ElementType>(layerParameters),
+            inputWeights(inputWeightsTensor),
+            forgetMeWeights(forgetMeWeightsTensor),
+            candidateWeights(candidateWeightsTensor),
+            outputWeights(outputWeightsTensor),
+            inputBias(inputBiasTensor),
+            forgetMeBias(forgetMeBiasTensor),
+            candidateBias(candidateBiasTensor),
+            outputBias(outputBiasTensor),
+            activation(activation), recurrentActivation(recurrentActivation)
         {
         }
 
         LayerType GetLayerType() const override { return LayerType::lstm; }
 
-        API_READONLY(ell::api::math::Tensor<ElementType> weights);
+        API_READONLY(ell::api::math::Tensor<ElementType> inputWeights);
+        API_READONLY(ell::api::math::Tensor<ElementType> forgetMeWeights);
+        API_READONLY(ell::api::math::Tensor<ElementType> candidateWeights);
+        API_READONLY(ell::api::math::Tensor<ElementType> outputWeights);
+        API_READONLY(ell::api::math::Tensor<ElementType> inputBias);
+        API_READONLY(ell::api::math::Tensor<ElementType> forgetMeBias);
+        API_READONLY(ell::api::math::Tensor<ElementType> candidateBias);
+        API_READONLY(ell::api::math::Tensor<ElementType> outputBias);
+        ActivationType activation;
+        ActivationType recurrentActivation;
     };
 
     // Api projections for PoolingLayer

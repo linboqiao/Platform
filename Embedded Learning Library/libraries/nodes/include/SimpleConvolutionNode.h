@@ -8,14 +8,14 @@
 
 #pragma once
 
+// math
+#include "Tensor.h"
+
 // model
 #include "IRMapCompiler.h"
 #include "ModelTransformer.h"
 #include "PortElements.h"
 #include "PortMemoryLayout.h"
-
-// predictors
-#include "ConvolutionalLayer.h"
 
 // stl
 #include <string>
@@ -32,8 +32,8 @@ namespace nodes
     class SimpleConvolutionNode : public model::CompilableNode
     {
     public:
-        using TensorType = typename predictors::neural::Layer<ValueType>::TensorType;
-        using ConstTensorReferenceType = typename predictors::neural::Layer<ValueType>::ConstTensorReferenceType;
+        using TensorType = math::ChannelColumnRowTensor<ValueType>;
+        using ConstTensorReferenceType = math::ConstChannelColumnRowTensorReference<ValueType>;
 
         /// @name Input and Output Ports
         /// @{
@@ -48,27 +48,30 @@ namespace nodes
         ///
         /// <param name="input"> The ports to get input data from. </param>
         /// <param name="inputMemoryLayout"> The layout of the input data. </param>
-        /// <param name="filterWeights"> The weights for the convolutional filters. </param>
         /// <param name="outputMemoryLayout"> The layout of the output data. </param>
-        /// <param name="convolutionalParameters"> The convolutional parameters. </param>
+        /// <param name="filterWeights"> The weights for the convolutional filters. Stored
+        ///  as a 3D tensor of dimensions (nf*fw) x fw x d, where nf == # filters, fw == filter width, and d == input depth. </param>
+        /// <param name="stride"> The output stride. </param>
         SimpleConvolutionNode(const model::PortElements<ValueType>& input,
-                                const model::PortMemoryLayout& inputMemoryLayout,
-                                const model::PortMemoryLayout& outputMemoryLayout,
-                                const ConstTensorReferenceType& filterWeights,
-                                const predictors::neural::ConvolutionalParameters& convolutionalParameters,
-                                const predictors::neural::PaddingParameters& inputPaddingParameters,
-                                const predictors::neural::PaddingParameters& outputPaddingParameters);
+                              const model::PortMemoryLayout& inputMemoryLayout,
+                              const model::PortMemoryLayout& outputMemoryLayout,
+                              const ConstTensorReferenceType& filterWeights,
+                              size_t stride);
 
-        /// <summary> Gets information about the input memory layout </summary>
+       /// <summary> Gets information about the input memory layout </summary>
         const model::PortMemoryLayout& GetInputMemoryLayout() const { return _inputMemoryLayout; }
 
         /// <summary> Gets information about the input memory layout </summary>
-        const model::PortMemoryLayout& GetOutputMemoryLayout() const { return _outputMemoryLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const { return _output.GetMemoryLayout(); }
 
-        /// <summary> Get the parameters used to control convolution. </summary>
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
         ///
-        /// <returns> A ConvolutionalParameters struct. </returns>
-        const predictors::neural::ConvolutionalParameters& GetConvolutionalParameters() const { return _convolutionalParameters; }
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         /// <summary> Gets the name of this type (for serialization). </summary>
         ///
@@ -91,15 +94,8 @@ namespace nodes
     protected:
         void Compute() const override;
         bool Refine(model::ModelTransformer& transformer) const override;
-        void WriteToArchive(utilities::Archiver& archiver) const override
-        {
-            throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
-        }
-
-        void ReadFromArchive(utilities::Unarchiver& archiver) override
-        {
-            throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
-        }
+        void WriteToArchive(utilities::Archiver& archiver) const override;
+        void ReadFromArchive(utilities::Unarchiver& archiver) override;
         bool HasState() const override { return true; } // stored state: convolutional parameters and memory layout
 
     private:
@@ -110,13 +106,11 @@ namespace nodes
         model::OutputPort<ValueType> _output;
 
         model::PortMemoryLayout _inputMemoryLayout;
-        model::PortMemoryLayout _outputMemoryLayout;
 
         TensorType _filterWeights;
-      
-        predictors::neural::ConvolutionalParameters _convolutionalParameters;
-        predictors::neural::PaddingParameters _inputPaddingParameters;
-        predictors::neural::PaddingParameters _outputPaddingParameters;
+
+        int _stride = 1;
+        bool _isDepthwiseSeparable = false;
     };
 
     //
@@ -144,28 +138,34 @@ namespace nodes
         /// <summary> Constructor. </summary>
         ///
         /// <param name="input"> The ports to get input data from. </param>
-        /// <param name="inputMemoryLayout"> The layout of the input data. </param>
         /// <param name="filterWeights"> The weights for the convolutional filters. </param>
+        /// <param name="inputMemoryLayout"> The layout of the input data. </param>
         /// <param name="outputMemoryLayout"> The layout of the output data. </param>
-        /// <param name="convolutionalParameters"> The convolutional parameters. </param>
+        /// <param name="filterSize"> The filter width. </param>
+        /// <param name="stride"> The output stride. </param>
+        /// <param name="isDepthwiseSeparable"> Boolean value indicating whether the convolution is depthwise separable. </param>
         SimpleConvolutionComputeNode(const model::PortElements<ValueType>& input,
-                                const model::PortElements<ValueType>& filterWeights,
-                                const model::PortMemoryLayout& inputMemoryLayout,
-                                const model::PortMemoryLayout& outputMemoryLayout,
-                                const predictors::neural::ConvolutionalParameters& convolutionalParameters,
-                                const predictors::neural::PaddingParameters& inputPaddingParameters,
-                                const predictors::neural::PaddingParameters& outputPaddingParameters);
+                                     const model::PortElements<ValueType>& filterWeights,
+                                     const model::PortMemoryLayout& inputMemoryLayout,
+                                     const model::PortMemoryLayout& outputMemoryLayout,
+                                     int filterSize,
+                                     int stride,
+                                     bool isDepthwiseSeparable);
 
         /// <summary> Gets information about the input memory layout </summary>
         const model::PortMemoryLayout& GetInputMemoryLayout() const { return _inputMemoryLayout; }
 
         /// <summary> Gets information about the input memory layout </summary>
-        const model::PortMemoryLayout& GetOutputMemoryLayout() const { return _outputMemoryLayout; }
+        model::PortMemoryLayout GetOutputMemoryLayout() const { return _output.GetMemoryLayout(); }
 
-        /// <summary> Get the parameters used to control convolution. </summary>
+        /// <summary> Returns true if the node can accept input with this memory layout order, else false </summary>
         ///
-        /// <returns> A ConvolutionalParameters struct. </returns>
-        const predictors::neural::ConvolutionalParameters& GetConvolutionalParameters() const { return _convolutionalParameters; }
+        /// <param name="order"> The memory layout order for all the input ports </summary>
+        /// <returns> If the node can accept the input memory layout order, true, else false </returns>
+        bool CanAcceptInputLayout(const utilities::DimensionOrder& order) const override
+        {
+            return GetInputMemoryLayout().GetLogicalDimensionOrder() == order;
+        }
 
         /// <summary> Gets the name of this type (for serialization). </summary>
         ///
@@ -205,11 +205,11 @@ namespace nodes
         model::OutputPort<ValueType> _output;
 
         model::PortMemoryLayout _inputMemoryLayout;
-        model::PortMemoryLayout _outputMemoryLayout;
 
-        predictors::neural::ConvolutionalParameters _convolutionalParameters;
-        predictors::neural::PaddingParameters _inputPaddingParameters;
-        predictors::neural::PaddingParameters _outputPaddingParameters;
+        int _filterSize = 0;
+        int _stride = 1;
+
+        bool _isDepthwiseSeparable = false;
     };
 }
 }

@@ -12,7 +12,11 @@
 #include "CommandLineParser.h"
 
 // model
-#include "MapCompiler.h"
+#include "MapCompilerOptions.h"
+#include "ModelOptimizerOptions.h"
+
+// utilities
+#include "Optional.h"
 
 // stl
 #include <string>
@@ -28,6 +32,8 @@ namespace common
     /// <summary> A struct that holds command line parameters for loading data. </summary>
     struct MapCompilerArguments
     {
+        using PreferredConvolutionMethod = model::PreferredConvolutionMethod;
+
         std::string compiledFunctionName; // defaults to output filename
         std::string compiledModuleName;
 
@@ -42,6 +48,8 @@ namespace common
         bool useThreadPool = true;
         int maxThreads = 4;
         bool debug = false;
+        PreferredConvolutionMethod convolutionMethod = PreferredConvolutionMethod::automatic; // known methods: auto, unrolled, simple, diagonal, winograd
+        utilities::Optional<bool> positionIndependentCode = false; // for generating -fPIC object code
 
         // target machine options
         std::string target = ""; // known target names: host, mac, linux, windows, pi0, pi3, pi3_64, aarch64, ios
@@ -59,7 +67,7 @@ namespace common
         /// <param name="modelname"> The name of the model. </param>
         ///
         /// <returns> A `model::MapCompilerOptions`. </returns>
-        model::MapCompilerOptions GetMapCompilerOptions(const std::string& modelName) const;        
+        model::MapCompilerOptions GetMapCompilerOptions(const std::string& modelName) const;
     };
 
     /// <summary> A version of DataLoadArguments that adds its members to the command line parser. </summary>

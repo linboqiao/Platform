@@ -107,12 +107,9 @@ namespace nodes
 
         void Accumulate(emitters::IRFunctionEmitter& function, llvm::Value* value)
         {
-            auto ifEmitter = function.If();
-            ifEmitter.If(emitters::TypedComparison::greaterThanFloat, value, function.Load(_accumValueVar));
-            {
+            function.If(emitters::TypedComparison::greaterThanFloat, value, function.Load(_accumValueVar), [this, value](emitters::IRFunctionEmitter& function) {
                 function.Store(_accumValueVar, value);
-            }
-            ifEmitter.End();
+            });
         }
 
         llvm::Value* GetValueAtPadding(emitters::IRFunctionEmitter& function)
@@ -241,7 +238,7 @@ namespace nodes
                                                                                          llvm::Value* inputColumn,
                                                                                          llvm::Value* inputChannel,
                                                                                          llvm::Value* inputBuffer,
-                                                                                         const model::Shape& inputIncrement,
+                                                                                         const model::MemoryShape& inputIncrement,
                                                                                          PoolingFunctionT& poolingFunction)
     {
         const auto plus = emitters::TypedOperator::add;
@@ -423,8 +420,8 @@ namespace nodes
         const auto& outputOffset = outputLayout.GetOffset();
 
         // Calculate cumulative increment for each dimension
-        model::Shape inputIncrement = inputLayout.GetCumulativeIncrement();
-        model::Shape outputIncrement = outputLayout.GetCumulativeIncrement();
+        model::MemoryShape inputIncrement = inputLayout.GetCumulativeIncrement();
+        model::MemoryShape outputIncrement = outputLayout.GetCumulativeIncrement();
 
         // Calculate input dimension parameters
         int inputRows = inputSize[0];
@@ -519,6 +516,15 @@ namespace nodes
             }
         }
     } // end function
+
+
+    template <typename ValueType, template <typename> class PoolingFunctionType>
+    void PoolingLayerNode<ValueType, PoolingFunctionType>::Copy(model::ModelTransformer& transformer) const
+    {
+        auto newPortElements = transformer.TransformPortElements(this->_input.GetPortElements());
+        auto newNode = transformer.AddNode<PoolingLayerNode<ValueType, PoolingFunctionType>>(newPortElements, this->_layer);
+        transformer.MapNodeOutput(this->_output, newNode->output);
+    }
 
     // Explicit specialization
     template class MeanPoolingFunction<float>;

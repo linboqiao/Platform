@@ -25,7 +25,8 @@ using namespace ell::predictors::neural;
 void TestIRCompiler()
 {
     TestFloatNode();
-    TestMultipleOutputNodes();
+    // TestMultipleOutputNodes(); // Multiple output nodes aren't currently supported
+    TestShapeFunctionGeneration();
     TestCompilableDotProductNode2<float>(3);
     TestCompilableDotProductNode2<double>(3);
     TestCompilableDotProductNode2<float>(4);
@@ -53,11 +54,31 @@ void TestIRCompiler()
     TestLinearPredictor<float>();
     // TestMultiplexer(); // FAILS -- crash
     // TestForest(); // FAILS -- crash
-
     TestMatrixVectorMultiplyNode(10, 5, true);
     TestMatrixVectorMultiplyNode(10, 5, false);
     TestMatrixMatrixMultiplyNode(4, 5, 6, true);
     TestMatrixMatrixMultiplyNode(4, 5, 6, false);
+
+    // Using BLAS
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, false, false, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, false, false, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, true, false, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, true, false, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, false, true, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, false, true, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, true, true, true);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, true, true, true);
+    
+    // Not using BLAS
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, false, false, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, false, false, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, true, false, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, true, false, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, false, true, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, false, true, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, false, true, true, false);
+    TestOrderedMatrixMatrixMultiplyNode(4, 5, 6, true, true, true, false);
+    
     // TestMatrixMatrixMultiplyNode(15, 25600, 27, false); // Fails due to numerical  issues
 
     TestCompilableScalarOutputNode();
@@ -72,6 +93,7 @@ void TestIRCompiler()
     TestCompilableSumNode();
     TestCompilableUnaryOperationNode();
     TestCompilableBinaryOperationNode();
+    TestCompilableBinaryOperationNode2();
     TestCompilableScalarBinaryPredicateNode();
     TestCompilableBinaryPredicateNode();
     TestCompilableMultiplexerNode();
@@ -80,6 +102,7 @@ void TestIRCompiler()
     TestCompilableTypeCastNode(10);
     TestReorderDataNode1();
     TestReorderDataNode2();
+    TestReorderDataNode3();
     TestReceptiveFieldMatrixNode(1, true); // new version
     TestReceptiveFieldMatrixNode(1, false); // old (slow) version
     TestReceptiveFieldMatrixNode(2, true); // new version
@@ -176,15 +199,20 @@ void TestIRCompiler()
     TestBinaryConvolutionalLayerNode(32, 32, 3, 4, 1, 0, PaddingScheme::minusOnes, false);
     TestBinaryConvolutionalLayerNode(32, 32, 3, 4, 1, 0, PaddingScheme::minusOnes, true);
 
-    // TestConvolutionalLayerNode(ConvolutionType::unrolled);
-    TestConvolutionalLayerNode(ConvolutionType::unrolled, 1, 0);
-    TestConvolutionalLayerNode2(ConvolutionType::unrolled, 1, 0);
-    // TestConvolutionalLayerNode(ConvolutionType::unrolled, 2, 0);
-    // TestConvolutionalLayerNode(ConvolutionType::unrolled, 1, 1); // Convolutional layer output padding not supported
+    // TestConvolutionalLayerNode(ConvolutionMethod::unrolled);
+    TestConvolutionalLayerNode(ConvolutionMethod::unrolled, 1, 0);
+    TestConvolutionalLayerNode2(ConvolutionMethod::unrolled, 1, 0);
+    TestConvolutionalLayerNode3(ConvolutionMethod::unrolled, 1, 0);
+    // TestConvolutionalLayerNode(ConvolutionMethod::unrolled, 2, 0);
+    // TestConvolutionalLayerNode(ConvolutionMethod::unrolled, 1, 1); // Convolutional layer output padding not supported
 
-    TestConvolutionalLayerNode(ConvolutionType::diagonal); // Input padding must be set correctly (to floor(filterWidth/2))
-    
-    TestConvolutionalLayerNode(ConvolutionType::simple); // Input padding must be set correctly (to floor(filterWidth/2))
+    TestConvolutionalLayerNode(ConvolutionMethod::diagonal); // Input padding must be set correctly (to floor(filterWidth/2))
+
+    TestConvolutionalLayerNode(ConvolutionMethod::simple); // Input padding must be set correctly (to floor(filterWidth/2))
+
+    TestConvolutionalLayerNode(ConvolutionMethod::winograd, 1, 0);
+    TestConvolutionalLayerNode2(ConvolutionMethod::winograd, 1, 0);
+    TestConvolutionalLayerNode3(ConvolutionMethod::winograd, 1, 0);
 
     TestFullyConnectedLayerNode();
     // TestFullyConnectedLayerNode(0, 1); // Fully-connected layer nodes can't have padding (yet)
@@ -193,10 +221,6 @@ void TestIRCompiler()
 
     TestProtoNNPredictorMap();
     TestMultiSourceSinkMap();
-
-    TestRecurrentNode();
-    TestGRUNode();
-    TestLSTMNode();
 
     TestRegionDetectionNode();
 

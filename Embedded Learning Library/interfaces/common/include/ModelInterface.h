@@ -26,11 +26,13 @@
 #include "OutputPort.h"
 #include "Port.h"
 #include "PortElements.h"
+#include "PortMemoryLayout.h"
 
 // apis
 #include "CallbackInterface.h"
 #include "MathInterface.h"
 #include "NeuralNetworkPredictorInterface.h"
+#include "DTWDistanceNode.h"
 
 // stl
 #include <memory>
@@ -150,6 +152,28 @@ private:
 };
 
 //
+// Port Memory Layout
+//
+struct PortMemoryLayout
+{
+    std::vector<int> size;
+    std::vector<int> padding;
+    std::vector<int> offset;
+    std::vector<int> order;
+
+    PortMemoryLayout(const std::vector<int>& size,
+                     const std::vector<int>& padding = {},
+                     const std::vector<int>& offset = {},
+                     const std::vector<int>& order = {});
+#ifndef SWIG
+    const ell::model::PortMemoryLayout& Get() const { return _layout; }
+    PortMemoryLayout(const ell::model::PortMemoryLayout& layout);
+#endif
+private:
+    ell::model::PortMemoryLayout _layout;
+};
+
+//
 // Node
 //
 
@@ -167,6 +191,8 @@ public:
     OutputPortIterator GetOutputPorts();
     InputPortIterator GetInputPorts();
     std::string GetRuntimeTypeName();
+    std::string GetMetadataValue(const std::string& key);
+    void SetMetadataValue(const std::string& key, const std::string& value);
 #ifndef SWIG
     Node(const ell::model::Node* other);
     const ell::model::Node* GetNode() const { return _node; }
@@ -240,12 +266,13 @@ public:
     PortElements() = default;
     PortElements(const OutputPort& port);
     int Size() const;
+    PortMemoryLayout GetMemoryLayout() const;
     PortType GetType() const;
     PortElement GetElement(int index) const;
 
 #ifndef SWIG
     PortElements(const ell::model::PortElementsBase& other);
-    const ell::model::PortElementsBase& GetPortElements() { return _elements; }
+    const ell::model::PortElementsBase& GetPortElements() const { return _elements; }
 #endif
 private:
     ell::model::PortElementsBase _elements;
@@ -259,7 +286,8 @@ class InputPort
 {
 public:
     InputPort() = default;
-    int Size();
+    int Size() const;
+    PortMemoryLayout GetMemoryLayout() const;
     Node GetNode();
     std::string GetName();
     PortType GetOutputType();
@@ -281,7 +309,8 @@ class OutputPort
 {
 public:
     OutputPort() = default;
-    int Size();
+    int Size() const;
+    PortMemoryLayout GetMemoryLayout() const;
     Node GetNode();
     std::string GetName();
     PortType GetOutputType();
@@ -365,9 +394,13 @@ public:
 
     // Specific methods per node type
     Node AddBinaryOperationNode(Model model, PortElements input1, PortElements input2, BinaryOperationType operation);
+    Node AddBinaryOperationNodeWithMemoryLayout(Model model, PortElements input1, PortMemoryLayout input1Layout, PortElements input2, PortMemoryLayout input2Layout, PortMemoryLayout outputLayout, BinaryOperationType operation);
     Node AddBufferNode(Model model, PortElements input, int windowSize);
+    Node AddTypeCastNode(Model model, PortElements input, PortType outputType);
     Node AddClockNode(Model model, PortElements input, double interval, double lagThreshold, const std::string& lagNotificationName);
+    Node AddConcatenationNode(Model model, const ell::api::math::TensorShape& outputShape, const std::vector<PortElements*>& inputs);
     Node AddConstantNode(Model model, std::vector<double> values, PortType type);
+    Node AddConstantNode(Model model, std::vector<double> values, const ell::api::math::TensorShape& outputShape, PortType type);
     Node AddDCTNode(Model model, PortElements input, int numFilters);
     Node AddDoubleNeuralNetworkPredictorNode(Model model, PortElements input, ell::api::predictors::NeuralNetworkPredictor<double> predictor);
     Node AddFFTNode(Model model, PortElements input);
@@ -378,9 +411,27 @@ public:
     Node AddLinearFilterBankNode(Model model, PortElements input, double sampleRate, int numFilters, int numFiltersToUse);
     Node AddMelFilterBankNode(Model model, PortElements input, double sampleRate, int numFilters, int numFiltersToUse);
     OutputNode AddOutputNode(Model model, const ell::api::math::TensorShape& shape, PortElements input);
+    Node AddReorderDataNode(Model model, PortElements input, PortMemoryLayout inputMemoryLayout, PortMemoryLayout outputMemoryLayout, std::vector<int> order, double outputPaddingValue = 0.0);
     Node AddSinkNode(Model model, PortElements input, PortElements trigger, const ell::api::math::TensorShape& shape, const std::string& sinkFunctionName);
     Node AddSourceNode(Model model, PortElements input, PortType outputType, const ell::api::math::TensorShape& shape, const std::string& sourceFunctionName);
     Node AddUnaryOperationNode(Model model, PortElements input, UnaryOperationType operation);
+    Node AddDTWNode(Model model, std::vector<std::vector<double>> prototype, PortElements input);
+    Node AddVoiceActivityDetectorNode(Model model, PortElements input, double sampleRate, double frameDuration,
+        double tauUp,  double tauDown, double largeInput, double gainAtt, double thresholdUp, double thresholdDown,
+        double levelThreshold);
+
+    Node AddFloatActivationLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ActivationLayer<float>& layer);
+    Node AddFloatBatchNormalizationLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BatchNormalizationLayer<float>& layer);
+    Node AddFloatBiasLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BiasLayer<float>& layer);
+    Node AddFloatBinaryConvolutionalLayerNode(Model model, PortElements input, const ell::api::predictors::neural::BinaryConvolutionalLayer<float>& layer);
+    Node AddFloatConvolutionalLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ConvolutionalLayer<float>& layer);
+    Node AddFloatFullyConnectedLayerNode(Model model, PortElements input, const ell::api::predictors::neural::FullyConnectedLayer<float>& layer);
+    Node AddFloatRegionDetectionLayerNode(Model model, PortElements input, const ell::api::predictors::neural::RegionDetectionLayer<float>& layer);
+    Node AddFloatPoolingLayerNode(Model model, PortElements input, const ell::api::predictors::neural::PoolingLayer<float>& layer);
+    Node AddFloatScalingLayerNode(Model model, PortElements input, const ell::api::predictors::neural::ScalingLayer<float>& layer);
+    Node AddFloatSoftmaxLayerNode(Model model, PortElements input, const ell::api::predictors::neural::SoftmaxLayer<float>& layer);
+    Node AddFloatGRULayerNode(Model model, PortElements input, PortElements reset, const ell::api::predictors::neural::GRULayer<float>& layer);
+    Node AddFloatLSTMLayerNode(Model model, PortElements input, PortElements reset, const ell::api::predictors::neural::LSTMLayer<float>& layer);
 
 private:
 #ifndef SWIG
@@ -439,6 +490,8 @@ public:
     template <typename ElementType>
     void Step(ell::api::TimeTickType timestamp = 0.0);
 
+    void Reset();
+
     // Older non callback based API, only makes sense when model has single input/output nodes and no source/sink nodes.
     std::vector<double> ComputeDouble(const AutoDataVector& inputData);
     std::vector<double> ComputeDouble(const std::vector<double>& inputData);
@@ -457,7 +510,12 @@ private:
 #endif
 
     std::shared_ptr<ell::model::Map> _map;
-    int _hasSourceNodes = 0;
+    enum class TriState {
+        Uninitialized,
+        No,
+        Yes
+    };
+    TriState _sourceNodeState = TriState::Uninitialized;
 };
 
 //
@@ -487,19 +545,36 @@ public:
     CompiledMap(ell::model::IRCompiledMap map, ell::api::math::TensorShape inputShape, ell::api::math::TensorShape outputShape);
 
     template <typename ElementType>
-    static bool InvokeSourceCallback(ElementType* input);
+    bool InvokeSourceCallback(ElementType* input);
 
     template <typename ElementType>
-    static void InvokeSinkCallback(ElementType* output);
+    void InvokeSinkCallback(ElementType* output);
 #endif
+
+    // Return true if the model contains a SourceNode.  In this case you need 
+    // to register the callbacks via SetSourceCallback and SetSinkCallback.
+    bool HasSourceNodes();
+
+    // Older non callback based API, only makes sense when model has single input/output nodes and no source/sink nodes.    
+    std::vector<double> ComputeDouble(const std::vector<double>& inputData);
+    std::vector<float> ComputeFloat(const std::vector<float>& inputData);
 
 private:
     template <typename ElementType>
-    static ell::api::CallbackForwarder<ElementType, ElementType>& CallbackForwarder();
+    ell::api::CallbackForwarder<ElementType, ElementType>& GetCallbackForwarder();
 
     std::shared_ptr<ell::model::IRCompiledMap> _map;
     ell::api::math::TensorShape _inputShape;
     ell::api::math::TensorShape _outputShape;
+    ell::api::CallbackForwarder<double, double> forwarderDouble;
+    ell::api::CallbackForwarder<float, float> forwarderFloat;
+
+    enum class TriState {
+        Uninitialized,
+        No,
+        Yes
+    };
+    TriState _sourceNodeState = TriState::Uninitialized;
 };
 
 //

@@ -16,9 +16,6 @@
 // data
 #include "DataVector.h"
 
-// math
-#include "Tensor.h"
-
 // utilities
 #include "Exception.h"
 #include "IArchivable.h"
@@ -39,6 +36,7 @@ namespace ell
 namespace model
 {
     class ModelOptimizer;
+    class ModelOptimizerContext;
     class ModelTransformer;
     class OutputNodeBase;
 
@@ -94,6 +92,9 @@ namespace model
         template <typename OutputVectorType, typename InputVectorType, data::IsDataVector<OutputVectorType> OutputConcept = true, data::IsDataVector<InputVectorType> InputConcept = true>
         OutputVectorType Compute(const InputVectorType& inputValues) const;
 
+        /// <summary> Reset the state of the model </summary>
+        void Reset();
+
         /// <summary> Returns the size of the map's input </summary>
         ///
         /// <returns> The dimensionality of the map's input port </returns>
@@ -107,12 +108,12 @@ namespace model
         /// <summary> Returns the shape of the map's input </summary>
         ///
         /// <returns> The dimensionality of the map's input </returns>
-        math::TensorShape GetInputShape() const;
+        MemoryShape GetInputShape() const;
 
         /// <summary> Returns the shape of the map's output </summary>
         ///
         /// <returns> The dimensionality of the map's output port </returns>
-        math::TensorShape GetOutputShape() const;
+        MemoryShape GetOutputShape() const;
 
         /// <summary> Returns the type of the map's input </summary>
         ///
@@ -148,7 +149,7 @@ namespace model
         /// <summary> Optimizes the model wrapped by this map. </summary>
         ///
         /// <param name="optimizer"> The optimizer to use for optimizing the model. </param>
-        void Optimize(ModelOptimizer& optimizer);
+        void Optimize(const ModelOptimizer& optimizer);
 
         /// <summary> Transforms the model wrapped by this map by applying a transformation function to each node </summary>
         ///
@@ -338,6 +339,9 @@ namespace model
         /// <param name="inputNode"> The input node. </param>
         void AddInput(const std::string& inputName, InputNodeBase* inputNode);
 
+        /// <summary> Removes the inputs from the map. </summary>
+        void RemoveInputs();
+
         /// <summary> Adds the given output node to the map. </summary>
         ///
         /// <param name="outputName"> Name of the output. </param>
@@ -392,7 +396,7 @@ namespace model
         std::vector<const Node*> GetAllOutputNodes() const;
         std::vector<const Node*> GetDebugSinkNodes() const;
         void FixTransformedIO(ModelTransformer& transformer);
-        void FixTransformedIO(ModelOptimizer& optimizer);
+        void FixTransformedIO(ModelOptimizerContext& context);
     };
 
     /// <summary> A serialization context used during Map deserialization. Wraps an existing `ModelSerializationContext` </summary>

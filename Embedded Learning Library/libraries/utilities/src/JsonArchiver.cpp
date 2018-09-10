@@ -11,7 +11,6 @@
 #include "IArchivable.h"
 #include "Unused.h"
 
-#include <cassert>
 #include <cctype>
 #include <iostream>
 #include <sstream>
@@ -195,7 +194,10 @@ namespace utilities
         MatchFieldName("_type");
         _tokenizer.MatchToken("\"");
         auto encodedTypeName = _tokenizer.ReadNextToken();
-        assert(encodedTypeName != "");
+        if (encodedTypeName == "")
+        {
+            throw utilities::DataFormatException(DataFormatErrors::badFormat, "JSON format is invalid, expecting a non empty object _type name");
+        }
         _tokenizer.MatchToken("\"");
 
         int version = 0;
@@ -393,6 +395,7 @@ namespace utilities
         charCodes['\''] = '\'';
         charCodes['\"'] = '\"';
         charCodes['\\'] = '\\';
+        charCodes['/'] = '/';
         charCodes['\n'] = 'n';
         charCodes['\r'] = 'r';
         charCodes['\t'] = 't';
@@ -403,7 +406,7 @@ namespace utilities
         std::stringstream s;
         for (auto ch : str)
         {
-            auto encoding = charCodes[ch];
+            auto encoding = ch >= 127 ? '\0' : charCodes[ch];
             if (encoding == '\0') // no encoding
             {
                 s.put(ch);
@@ -423,6 +426,7 @@ namespace utilities
         charCodes['\''] = '\'';
         charCodes['\"'] = '\"';
         charCodes['\\'] = '\\';
+        charCodes['/'] = '/';
         charCodes['n'] = '\n';
         charCodes['r'] = '\r';
         charCodes['t'] = '\t';
@@ -435,7 +439,7 @@ namespace utilities
         {
             if (prevWasBackslash)
             {
-                auto encoding = charCodes[ch];
+                auto encoding = ch >= 127 ? '\0' : charCodes[ch];
                 if (encoding == '\0') // nothing special
                 {
                     s.put('\\'); // emit previous backslash

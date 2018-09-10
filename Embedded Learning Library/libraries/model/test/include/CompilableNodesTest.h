@@ -9,6 +9,7 @@
 #pragma once
 
 // predictors
+#include <ConvolutionalLayer.h>
 #include <Layer.h>
 
 // stl
@@ -30,12 +31,14 @@ void TestCompilableUnaryOperation_square_Node();
 void TestL2NormSquaredNodeCompiled();
 void TestMatrixVectorProductNodeCompile();
 void TestCompilableBinaryOperationNode();
+void TestCompilableBinaryOperationNode2();
 void TestCompilableScalarBinaryPredicateNode();
 void TestCompilableBinaryPredicateNode();
 void TestCompilableMultiplexerNode();
 void TestCompilableTypeCastNode(size_t dimension);
 void TestReorderDataNode1();
 void TestReorderDataNode2();
+void TestReorderDataNode3();
 void TestReceptiveFieldMatrixNode(size_t numChannels, bool useNewReshape);
 void TestCompilableAccumulatorNodeFunction();
 void TestCompilableSourceNode();
@@ -44,6 +47,7 @@ template <typename ElementType>
 void TestCompilableDotProductNode2(int dimension);
 void TestFloatNode();
 void TestMultipleOutputNodes();
+void TestShapeFunctionGeneration();
 void TestCompilableClockNode();
 void TestCompilableFFTNode();
 
@@ -52,6 +56,7 @@ void TestCompilableFFTNode();
 //
 void TestMatrixVectorMultiplyNode(int m, int n, bool useBlas);
 void TestMatrixMatrixMultiplyNode(int m, int n, int k, bool useBlas);
+void TestOrderedMatrixMatrixMultiplyNode(int m, int n, int k, bool transposeA, bool transposeB, bool transposeC, bool useBlas);
 
 //
 // NN layer nodes
@@ -63,12 +68,7 @@ void TestNeuralNetworkPredictorNode4();
 void TestNeuralNetworkPredictorNode5();
 void TestNeuralNetworkPredictorNode6();
 
-enum class ConvolutionType
-{
-    simple,
-    unrolled,
-    diagonal
-};
+using ConvolutionMethod = ell::predictors::neural::ConvolutionMethod;
 
 void TestInputLayerNode(size_t outputPadding = 0);
 void TestHardSigmoidActivationLayerNode(size_t inputPaddingSize = 0, size_t outputPaddingSize = 0);
@@ -79,17 +79,15 @@ void TestSigmoidActivationLayerNode(size_t inputPadding = 0, size_t outputPaddin
 void TestBatchNormalizationLayerNode(size_t inputPadding = 0, size_t outputPadding = 0);
 void TestBiasLayerNode(size_t inputPadding = 0, size_t outputPadding = 0);
 void TestBinaryConvolutionalLayerNode(size_t imageRows, size_t imageColumns, size_t numChannels, size_t numFilters, size_t inputPadding = 1, size_t outputPadding = 0, ell::predictors::neural::PaddingScheme = ell::predictors::neural::PaddingScheme::zeros, bool scaleByFilterMeans = true);
-void TestConvolutionalLayerNode(ConvolutionType convolutionType, size_t inputPadding = 1, size_t outputPadding = 0);
-void TestConvolutionalLayerNode2(ConvolutionType convolutionType, size_t inputPadding = 1, size_t outputPadding = 0);
+void TestConvolutionalLayerNode(ConvolutionMethod convolutionMethod, size_t inputPadding = 1, size_t outputPadding = 0);
+void TestConvolutionalLayerNode2(ConvolutionMethod convolutionMethod, size_t inputPadding = 1, size_t outputPadding = 0);
+void TestConvolutionalLayerNode3(ConvolutionMethod convolutionMethod, size_t inputPadding = 1, size_t outputPadding = 0);
 void TestFullyConnectedLayerNode(size_t inputPadding = 0, size_t outputPadding = 0);
 void TestMaxPoolingLayerNode(size_t inRows, size_t inCols, size_t numChannels, size_t outRows, size_t outCols, size_t poolingSize, size_t poolingStride, size_t inputPadding = 0, size_t outputPadding = 0);
 void TestMeanPoolingLayerNode(size_t inRows, size_t inCols, size_t numChannels, size_t outRows, size_t outCols, size_t poolingSize, size_t poolingStride, size_t inputPadding = 0, size_t outputPadding = 0);
 void TestScalingLayerNode(size_t inputPadding = 0, size_t outputPadding = 0);
 void TestSoftmaxLayerNode(size_t inputPadding = 0, size_t outputPadding = 0);
 void TestFusedLinearLayerNodes(size_t rows, size_t columns, size_t channels);
-void TestRecurrentNode();
-void TestGRUNode();
-void TestLSTMNode();
 void TestRegionDetectionNode();
 
 #include "../tcc/CompilableNodesTest.tcc"

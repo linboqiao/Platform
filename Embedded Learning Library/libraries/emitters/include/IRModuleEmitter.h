@@ -12,6 +12,7 @@
 #include "IRDiagnosticHandler.h"
 #include "IREmitter.h"
 #include "IRFunctionEmitter.h"
+#include "IRProfiler.h"
 #include "IRRuntime.h"
 #include "IRThreadPool.h"
 #include "LLVMUtilities.h"
@@ -64,11 +65,6 @@ namespace emitters
         // Properties of the module
         //
 
-        /// <summary> Set the base compiler settings </summary>
-        ///
-        /// <param name="parameters"> The settings for the compiler to use </param>
-        void SetCompilerOptions(const CompilerOptions& parameters) override;
-
         /// <summary> Returns the module's name. </summary>
         ///
         /// <returns> The module's name. </returns>
@@ -79,13 +75,24 @@ namespace emitters
         //
 
         /// <summary> The current function being emitted. </summary>
+        ///
+        /// <returns> Reference to an `IRFunctionEmitter` for the current function. </returns>
         IRFunctionEmitter& GetCurrentFunction();
 
         /// <summary> Returns the current block being emitted into. </summary>
+        ///
+        /// <returns> Pointer to an `IRBlockRegion` for the current region. </returns>
         IRBlockRegion* GetCurrentRegion() { return GetCurrentFunction().GetCurrentRegion(); }
 
         /// <summary> Returns the runtime object that manages functions. </summary>
+        ///
+        /// <returns> Reference to the `IRRuntime`. </returns>
         IRRuntime& GetRuntime() { return _runtime; }
+
+        /// <summary> Gets a reference to the profiler. </summary>
+        ///
+        /// <returns> Reference to the `IRProfiler` object for this module. </returns>
+        IRProfiler& GetProfiler() { return _profiler; }
 
         /// <summary> Gets a reference to the underlying IREmitter. </summary>
         ///
@@ -108,7 +115,17 @@ namespace emitters
         void BeginMapPredictFunction(const std::string& functionName, NamedVariableTypeList& args) override;
 
         /// <summary> Ends the current model prediction function. </summary>
-        void EndMapPredictFunction() override { EndFunction(); }
+        void EndMapPredictFunction() override;
+
+        /// <summary> Begin a new function for resetting a given node. Each node that needs to implement 
+        /// reset calls this and implements their own reset logic.  The IRModuleEmitter wraps all that
+        /// in a master model_Reset function which is exposed in the API. </summary>
+        ///
+        /// <param name="nodeName"> The name of the node being reset (should be unique to the model). </param>
+        IRFunctionEmitter& BeginResetFunction(const std::string& nodeName);
+
+        /// <summary> End your reset function created with BeginResetFunction. </summary>
+        void EndResetFunction() { EndFunction(); }
 
         /// <summary> Begins an IR function with no arguments and directs subsequent commands to it. </summary>
         ///
@@ -241,6 +258,15 @@ namespace emitters
         template <typename ValueType>
         llvm::GlobalVariable* Global(const std::string& name, ValueType value);
 
+        /// <summary> Emit a named global variable of Pointer type, initialized to nullptr. </summary>
+        ///
+        /// <typeparam name="ValueType"> The variable type. </typeparam>
+        /// <param name="name"> The name of the variable. </param>
+        /// <param name="type"> The variable type. </param>
+        ///
+        /// <returns> Pointer to the llvm::GlobalVariable that represents the variable. </returns>
+        llvm::GlobalVariable* GlobalPointer(const std::string& name, VariableType type);
+
         /// <summary> Emit a named global array of the given type and size. </summary>
         ///
         /// <param name="type"> The variable type. </param>
@@ -259,10 +285,20 @@ namespace emitters
         /// <returns> Pointer to the llvm::GlobalVariable that represents the variable. </returns>
         llvm::GlobalVariable* GlobalArray(const std::string& name, llvm::Type* pType, const size_t size);
 
+        /// <summary> Emit a zero-initialized named, module scoped array of a template type. </summary>
+        ///
+        /// <typeparam name="ValueType"> Type of each array entry. </typeparam>
+        /// <param name="name"> The name of the variable. </param>
+        /// <param name="size"> The size of the array. </param>
+        ///
+        /// <returns> Pointer to the llvm::GlobalVariable that represents the variable. </returns>
+        template <typename ValueType>
+        llvm::GlobalVariable* GlobalArray(const std::string& name, size_t size);
+
         /// <summary> Emit a named, module scoped array of a template type. </summary>
         ///
         /// <typeparam name="ValueType"> Type of each array entry. </typeparam>
-        /// <param name="value"> The value of the array. </param>
+        /// <param name="name"> The name of the variable. </param>
         /// <param name="value"> The value of the array. </param>
         ///
         /// <returns> Pointer to the llvm::GlobalVariable that represents the variable. </returns>
@@ -498,21 +534,21 @@ namespace emitters
         // Optimization
         //
 
-        /// <summary> Run standard module optimization passes. </summary>
-        void Optimize();
-
         /// <summary> Optimize this module using the given optimizer. </summary>
         ///
         /// <param name="optimizer"> The optimizer. </param>
-        void Optimize(IRModuleOptimizer& optimizer);
+        void Optimize(IROptimizer& optimizer);
 
         /// <summary>
-        /// Set the target machine and arch for this module. This aids the system in optimizations and
+        /// Get the target machine and arch for this module. The target machine aids the system in optimizations and
         /// Jitting etc.
         /// </summary>
         ///
-        /// <param name="pMachine"> Pointer to a llvm::TargetMachine object that describes the target machine. </param>
-        void SetTargetMachine(llvm::TargetMachine* pMachine);
+        /// <returns> 
+        /// An llvm::TargetMachine object that describes the target machine. It may return `nullptr` if a specific 
+        /// target machine can't be found. It isn't an error if no target machine is found. 
+        ///</returns>
+        llvm::TargetMachine* GetTargetMachine();
 
         //
         // Helpers, standard C Runtime functions, and debug support
@@ -563,18 +599,8 @@ namespace emitters
         /// <returns> Pointer to the underlying llvm::Module. </returns>
         llvm::Module* GetLLVMModule() const { return _pModule.get(); }
 
-        /// <summary> Sets the LLVM triple for the current module. </summary>
-        ///
-        /// <param name="triple"> The triple representing the desired machine configuration. </param>
-        void SetTargetTriple(const std::string& triple);
-
         /// <summary> Gets the LLVM data layout object for the current module. </summary>
         const llvm::DataLayout& GetTargetDataLayout() const;
-
-        /// <summary> Sets the LLVM data layout string for the current module. </summary>
-        ///
-        /// <param name="dataLayout"> The data layout string representing the desired machine configuration. </param>
-        void SetTargetDataLayout(const std::string& dataLayout);
 
         /// <summary> Can this module emitter still be used to add functions to the module? </summary>
         ///
@@ -632,6 +658,10 @@ namespace emitters
         /// <param name="priority"> The priority for this finalization function. Finalization functions are called in increasing order of priority. The default value is LLVM's default priority. </param>
         /// <param name="forData"> Optional global constant that this function is for. If the data is optimized away, then the finalization function will be also. </param>
         void AddFinalizationFunction(IRFunctionEmitter& function, int priority = 65536, llvm::Constant* forData = nullptr);
+
+    protected:
+        void SetCompilerOptions(const CompilerOptions& parameters) override;
+
 
     private:
         friend class IRFunctionEmitter;
@@ -698,12 +728,8 @@ namespace emitters
         IRFunctionEmitter Function(const std::string& name, llvm::Type* returnType, const std::vector<llvm::Type*>& argTypes, bool isPublic = false);
         IRFunctionEmitter Function(const std::string& name, llvm::Type* returnType, const NamedLLVMTypeList& arguments, bool isPublic = false);
 
-        /// <summary> Associates metadata with a given function. </summary>
-        ///
-        /// <param name="function"> A pointer to the `llvm::Function` instance representing the function. </param>
-        /// <param name="tag"> The metadata tag. </param>
-        /// <param name="content"> Optional metadata value. </param>
-        /// <remarks> To insert well-known metadata, prefer the "IncludeInXXX" metadata methods. </remarks>
+        // Associate metadata with a given function.
+        // Note: to insert well-known metadata, prefer the "IncludeInXXX" metadata methods.
         void InsertFunctionMetadata(llvm::Function* function, const std::string& tag, const std::vector<std::string>& value = { "" });
 
         // Get a reference to the thread pool
@@ -720,6 +746,8 @@ namespace emitters
         IRFunctionEmitter Function(const std::string& name, VariableType returnType, const VariableTypeList* pArguments, bool isPublic);
         llvm::Function::LinkageTypes Linkage(bool isPublic);
         llvm::ConstantAggregateZero* ZeroInitializer(llvm::Type* pType);
+        static void CompleteCompilerOptions(CompilerOptions& parameters);
+        void SetTargetTriple(const std::string& triple);
 
         //
         // LLVM global state management
@@ -735,15 +763,17 @@ namespace emitters
         IREmitter _emitter;
         std::stack<std::pair<IRFunctionEmitter, llvm::IRBuilder<>::InsertPoint>> _functionStack; // contains the location we were emitting code into when we paused to emit a new function
 
-        IRVariableTable _literals; // Symbol table - name to literals
-        IRVariableTable _globals; // Symbol table - name to global variables
+        IRValueTable _literals; // Symbol table - name to literals
+        IRValueTable _globals; // Symbol table - name to global variables
         IRRuntime _runtime; // Manages emission of runtime functions
         IRThreadPool _threadPool; // A pool of worker threads -- gets initialized the first time it's used (?)
+        IRProfiler _profiler;
         std::unique_ptr<llvm::Module> _pModule; // The LLVM Module being emitted
 
         // Info to modify how code is written out
         std::map<std::string, std::vector<std::string>> _functionComments;
         std::vector<std::pair<std::string, std::string>> _preprocessorDefinitions;
+        std::vector<std::string> _resetFunctions;
     };
 
     //

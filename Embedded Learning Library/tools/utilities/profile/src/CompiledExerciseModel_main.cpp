@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // compiled model
+#define ELL_MAIN
 #include "compiled_model_noprofile.h"
 
 // stl
@@ -53,11 +54,19 @@ void RunModel(const ProfileArguments& profileArguments)
     std::vector<InputType> input(inputSize);
     std::vector<OutputType> output(outputSize);
 
+    #ifdef ELL_WRAPPER_CLASS
+    ELL_PredictWrapper wrapper;
+    #endif
+
     // Evaluate the model in a loop
     for (int iter = 0; iter < profileArguments.numIterations; ++iter)
     {
         // Exercise the model
-        ELL_Predict(input.data(), output.data());
+#ifdef ELL_WRAPPER_CLASS
+        wrapper.Predict(input, output);
+#else
+        ELL_Predict(nullptr, input.data(), output.data());
+#endif
     }
 }
 
@@ -79,4 +88,11 @@ int main(int argc, char* argv[])
     RunModel<InputType, OutputType>(profileArguments);
 
     return 0;
+}
+
+void fun()
+{
+    // this hack allows us to resolve printf which is used by compiled_model.o
+    // Not sure why the windows linker is not resolving it anyway.
+    printf("hi");
 }

@@ -23,6 +23,9 @@
 // utilities
 #include "Unused.h"
 
+// LLVM
+#include <llvm/IR/TypeBuilder.h>
+
 // stl
 #include <iostream>
 #include <memory>
@@ -102,7 +105,6 @@ void TestIREmitter()
 void TestLLVMShiftRegister()
 {
     auto module = MakeHostModuleEmitter("Shifter");
-    module.DeclarePrintf();
 
     std::vector<double> data({ 1.1, 2.1, 3.1, 4.1, 5.1 });
     std::vector<double> newData1({ 1.2, 2.2 });
@@ -133,7 +135,6 @@ void TestLLVMShiftRegister()
 void TestEmitLLVM()
 {
     auto module = MakeHostModuleEmitter("Looper");
-    module.DeclarePrintf();
 
     llvm::StructType* structType = module.GetOrCreateStruct("ShiftRegister", { { "size", VariableType::Int32 }, { "value", VariableType::Double } });
 
@@ -149,14 +150,7 @@ void TestEmitLLVM()
     testLoop.Begin(data.size());
     testLoop.End();
 
-    IRForLoopEmitter forLoop(fnMain);
-    auto pBodyBlock = forLoop.Begin(data.size());
-    {
-        auto printBlock = fnMain.BlockAfter(pBodyBlock, "PrintBlock");
-        fnMain.Branch(printBlock);
-        fnMain.SetCurrentBlock(printBlock);
-
-        auto i = forLoop.LoadIterationVariable();
+    fnMain.For(data.size(), [pData, pOutput, pTotal, pRegisters](IRFunctionEmitter& fnMain, auto i) {
         auto item = fnMain.ValueAt(pData, i);
         auto sum = fnMain.Operator(TypedOperator::addFloat, fnMain.Literal(0.3), item);
         fnMain.SetValueAt(pOutput, i, sum);
@@ -165,23 +159,18 @@ void TestEmitLLVM()
         llvm::Value* pRegisterSum = fnMain.PointerOffset(pRegisters, i, fnMain.Literal(1));
         fnMain.Store(pRegisterSum, sum);
 
-        IRIfEmitter ife(fnMain);
-        ife.If(TypedComparison::lessThanFloat, item, fnMain.Literal(5.7));
-        {
+        fnMain.If(TypedComparison::lessThanFloat, item, fnMain.Literal(5.7), [](IRFunctionEmitter& fnMain) {
             fnMain.Print("First IF!\n");
-        }
-        ife.If(TypedComparison::equalsFloat, item, fnMain.Literal(6.6));
-        {
+        });
+
+        fnMain.If(TypedComparison::equalsFloat, item, fnMain.Literal(6.6), [](IRFunctionEmitter& fnMain) {
             fnMain.Print("Second If!\n");
-        }
-        ife.Else();
-        {
+        }).Else([](IRFunctionEmitter& fnMain) {
             fnMain.Print("Else\n");
-        }
-        ife.End();
+        });
+
         fnMain.Printf({ fnMain.Literal("%d, %f\n"), i, item });
-    }
-    forLoop.End();
+    });
 
     fnMain.SetValueAt(pOutput, fnMain.Literal(3), fnMain.Literal(10.0));
     fnMain.SetValueAt(pOutput, fnMain.Literal(4), fnMain.Literal(20.0));
@@ -209,122 +198,111 @@ void TestEmitLLVM()
     module.WriteToFile("loop.bc");
 }
 
-// Generate the Then, Else blocks first, then combine then in an if,else
-void TestIfElseComplex()
-{
-    auto module = MakeHostModuleEmitter("IfElse");
-    module.DeclarePrintf();
+static std::stringstream g_debugOutput;
 
-    auto fn = module.BeginMainFunction();
-    auto pMainBlock = fn.GetCurrentBlock();
-    fn.Print("Begin IfThen\n");
-    // We deliberately create the done block first, so that we have to move blocks around when we do if then
-    auto pDoneBlock = fn.BeginBlock("DoneBlock");
+extern "C" {
+    void DebugPrint(char* message)
     {
-        fn.Print("Done IfThen\n");
-        fn.Return();
+        g_debugOutput << message;
     }
-    auto pThenBlock = fn.BeginBlock("ThenBlock");
-    {
-        fn.Print("Then Called\n");
-        fn.Branch(pDoneBlock); // Inject an unconditional jump here, so we can test if the jump gets reset by the IfThen below
-    }
-    auto pElseBlock = fn.BeginBlock("ElseBlock");
-    {
-        fn.Print("Else Called\n");
-        fn.Branch(pDoneBlock); // Inject an unconditional jump here, so we can test if the jump gets reset by the IfThen below
-    }
-    auto pCondBlock = fn.BeginBlock("Condition");
-    {
-        fn.Print("Checking condition\n");
-        IRIfEmitter ife(fn);
-        ife.IfThenElse(TypedComparison::lessThanFloat, fn.Literal(10.0), fn.Literal(5.0), pThenBlock, pElseBlock);
-    }
-    auto pAfterIf = fn.GetCurrentBlock();
-    {
-        fn.Print("After If\n");
-        fn.BlockAfter(pAfterIf, pDoneBlock);
-        fn.Branch(pDoneBlock);
-    }
-    fn.SetCurrentBlock(pMainBlock);
-    {
-        fn.Branch(pCondBlock);
-    }
-
-    module.EndFunction();
-    module.DebugDump();
-    module.WriteToFile("ifelse.bc");
 }
 
-void TestIfElseBlockRegions(bool runJit)
+std::string TestCaptureStdout(emitters::IRModuleEmitter& emitter, std::function<void()> body)
 {
-    auto module = MakeHostModuleEmitter("IfElse");
-    module.DeclarePrintf();
+    llvm::FunctionType* type = llvm::TypeBuilder<int(char*), false>::get(emitter.GetIREmitter().GetContext());
+    auto debugPrintFunction = emitter.DeclareFunction("DebugPrint", type);
+    g_debugOutput.clear();
 
-    auto fn = module.BeginMainFunction();
-    auto pMainBlock = fn.GetCurrentBlock();
-    fn.Print("Begin IfThen\n");
-    IRBlockRegionList regions;
-    IRBlockRegion* pRegion1;
-    IRBlockRegion* pRegion2;
+    body();
 
-    llvm::BasicBlock* pBlock = fn.BeginBlock("Region1_1");
-    {
-        pRegion1 = regions.Add(pBlock);
-        fn.Print("Region1_1\n");
-    }
-    pBlock = fn.BeginBlock("Region1_2", true);
-    {
-        fn.Print("Region1_2\n");
-    }
-    pBlock = fn.BeginBlock("Region1_3", true);
-    {
-        fn.Print("Region1_3\n");
-    }
-    pRegion1->SetEnd(pBlock);
+    IRExecutionEngine iee(std::move(emitter));
+    iee.DefineFunction(debugPrintFunction, reinterpret_cast<uint64_t>(&DebugPrint));
+    iee.RunMain();
 
-    pBlock = fn.BeginBlock("Region2_1");
-    {
-        pRegion2 = regions.Add(pBlock);
-        fn.Print("Region2_1\n");
-    }
-    pBlock = fn.BeginBlock("Region2_2", true);
-    {
-        fn.Print("Region2_2\n");
-    }
-    pBlock = fn.BeginBlock("Region2_3", true);
-    {
-        fn.Print("Region2_3\n");
-    }
-    pRegion2->SetEnd(pBlock);
+    return g_debugOutput.str();
+}
 
-    IRIfEmitter ife(fn);
-    auto pCondBlock = ife.IfThenElse(TypedComparison::lessThanFloat, fn.Literal(10.0), fn.Literal(5.0), pRegion1, pRegion2);
-    fn.Print("Done IfThen\n");
-    fn.Return();
+void CallDebugPrint(IRFunctionEmitter& helper, std::string message)
+{
+    helper.Call("DebugPrint", { helper.Literal(message.c_str()) });
+}
 
-    fn.SetCurrentBlock(pMainBlock);
-    {
-        fn.Branch(pCondBlock);
-    }
+void TestIfHelpers(bool runJit)
+{
+    auto module = MakeHostModuleEmitter("IfHelpers");
 
-    module.EndFunction();
-    if (runJit)
-    {
-        IRExecutionEngine iee(std::move(module));
-        iee.RunMain();
-    }
-    else
-    {
-        module.DebugDump();
-        module.WriteToFile("ifelseRegion.bc");
-    }
+    auto result = TestCaptureStdout(module, [&]() {
+
+        NamedVariableTypeList argTypes = { { "x", VariableType::Double },
+        { "y", VariableType::Double },
+        { "z", VariableType::Double } };
+        auto helper = module.BeginFunction("IfTest", emitters::VariableType::Void, argTypes);
+
+        auto arguments = helper.Arguments().begin();
+        auto x = &(*arguments++);
+        auto y = &(*arguments++);
+        auto z = &(*arguments++);
+        CallDebugPrint(helper, "Begin IfThen\n");
+        {
+            IRIfEmitter ifEmitter = helper.If(helper.Comparison(emitters::TypedComparison::greaterThanFloat, x, y), [x, z](IRFunctionEmitter& fn) {
+                CallDebugPrint(fn, " If Block\n");
+                fn.If(fn.Comparison(emitters::TypedComparison::lessThanFloat, x, z), [](IRFunctionEmitter& fn) {
+                    CallDebugPrint(fn, "  Inner If block 1\n");
+                });
+            });
+            ifEmitter.ElseIf(helper.Comparison(emitters::TypedComparison::lessThanFloat, x, z), [x, y](IRFunctionEmitter& fn) {
+                CallDebugPrint(fn, " ElseIf block\n");
+                fn.If(fn.Comparison(emitters::TypedComparison::lessThanFloat, x, y), [](IRFunctionEmitter& fn) {
+                    CallDebugPrint(fn, "  Inner If block 2\n");
+                });
+            });
+            ifEmitter.Else([y, z](IRFunctionEmitter& fn) {
+                CallDebugPrint(fn, " Else block\n");
+                fn.If(fn.Comparison(emitters::TypedComparison::greaterThanFloat, y, z), [](IRFunctionEmitter& fn) {
+                    CallDebugPrint(fn, "  Inner If block 3\n");
+                });
+            });
+        }
+        CallDebugPrint(helper, "End IfThen\n");
+        helper.Return();
+        module.EndFunction();
+
+        auto fn = module.BeginMainFunction();
+
+        // test all 3 branches of the if-then-else block.
+        fn.Call("IfTest", { fn.Literal(10.0), fn.Literal(5.0), fn.Literal(20.0) });
+        fn.Call("IfTest", { fn.Literal(10.0), fn.Literal(15.0), fn.Literal(20.0) });
+        fn.Call("IfTest", { fn.Literal(10.0), fn.Literal(15.0), fn.Literal(5.0) });
+
+        fn.Return();
+        module.EndFunction();
+
+        if (!runJit)
+        {
+            module.DebugDump();
+            module.WriteToFile("ifhelpers.bc");
+        }
+    });
+
+    std::string actual = g_debugOutput.str();
+    std::string expected = "Begin IfThen\n"
+        " If Block\n"
+        "  Inner If block 1\n"
+        "End IfThen\n"
+        "Begin IfThen\n"
+        " ElseIf block\n"
+        "  Inner If block 2\n"
+        "End IfThen\n"
+        "Begin IfThen\n"
+        " Else block\n"
+        "  Inner If block 3\n"
+        "End IfThen\n";
+    testing::ProcessTest("TestIfHelpers", actual == expected);
 }
 
 void TestLogical()
 {
     auto module = MakeHostModuleEmitter("Logical");
-    module.DeclarePrintf();
 
     auto fn = module.BeginFunction("TestLogical", VariableType::Void, { VariableType::Int32, VariableType::Int32, VariableType::Int32 });
     auto args = fn.Arguments().begin();
@@ -380,7 +358,6 @@ void TestLogical()
 void TestForLoop(bool runJit)
 {
     auto module = MakeHostModuleEmitter("ForLoop");
-    module.DeclarePrintf();
 
     auto add = GetOperator<double>(BinaryOperationType::add);
     auto varType = GetVariableType<double>();
@@ -390,14 +367,10 @@ void TestForLoop(bool runJit)
 
     fn.Print("Begin ForLoop\n");
     const int numIter = 10;
-    IRForLoopEmitter forLoop(fn);
-    forLoop.Begin(numIter);
-    {
-        auto i = forLoop.LoadIterationVariable();
+    fn.For(numIter, [sum, add](IRFunctionEmitter& fn, llvm::Value* i) {
         fn.Printf({ fn.Literal("i: %f\n"), i });
         fn.Store(sum, fn.Operator(add, fn.Load(sum), i));
-    }
-    forLoop.End();
+    });
 
     fn.Return();
     module.EndFunction();
@@ -420,7 +393,6 @@ void TestForLoop(bool runJit)
 void TestWhileLoop()
 {
     auto module = MakeHostModuleEmitter("WhileLoop");
-    module.DeclarePrintf();
 
     auto int8Type = GetVariableType<char>();
     auto int32Type = GetVariableType<int32_t>();
@@ -431,10 +403,8 @@ void TestWhileLoop()
         fn.Print("Begin while loop\n");
         auto i = fn.Variable(int32Type);
         fn.Store(i, fn.Literal<int>(5));
-        IRWhileLoopEmitter whileLoop(fn);
         fn.Store(conditionVar, fn.TrueBit());
-        whileLoop.Begin(conditionVar);
-        {
+        fn.While(conditionVar, [conditionVar, i](IRFunctionEmitter& fn) {
             fn.Printf("i: %d\n", { fn.Load(i) });
 
             // i++
@@ -442,8 +412,7 @@ void TestWhileLoop()
 
             // update conditionVar (i != 10)
             fn.Store(conditionVar, fn.Comparison(TypedComparison::notEquals, fn.Load(i), fn.Literal<int>(10)));
-        }
-        whileLoop.End();
+        });
 
         fn.Printf("Done with while loop: i = %d\n", { fn.Load(i) });
         fn.Return();
@@ -593,8 +562,6 @@ void TestStruct()
 
     llvm::StructType* structType = module.GetOrCreateStruct("MytStruct", { { "intField", int32Type }, { "ptrField", int8PtrType }, { "doubleField", doubleType } });
 
-    module.DeclarePrintf();
-
     auto function = module.BeginMainFunction();
     {
         auto structVar = function.Variable(structType, "s");
@@ -641,7 +608,6 @@ void TestDuplicateStructs()
 void TestScopedIf()
 {
     auto module = MakeHostModuleEmitter("If");
-    module.DeclarePrintf();
 
     auto fn = module.BeginMainFunction();
     auto cmp = fn.Comparison(TypedComparison::lessThanFloat, fn.Literal(10.0), fn.Literal(15.0));
@@ -657,15 +623,14 @@ void TestScopedIf()
 void TestScopedIfElse()
 {
     auto module = MakeHostModuleEmitter("IfElse");
-    module.DeclarePrintf();
 
     auto fn = module.BeginMainFunction();
-    fn.For(10, [](IRFunctionEmitter& fn, llvm::Value* index) {
+    fn.For(10, [](IRFunctionEmitter& fn, auto index) {
         fn.Printf("index: ", { index });
         auto cmp = fn.Comparison(TypedComparison::lessThan, index, fn.Literal<int>(3));
         fn.If(cmp, [](IRFunctionEmitter& fn) {
-              fn.Print("< 3\n");
-          }).Else([](IRFunctionEmitter& fn) {
+            fn.Print("< 3\n");
+        }).Else([](IRFunctionEmitter& fn) {
             fn.Print("not < 3\n");
         });
     });
@@ -678,18 +643,17 @@ void TestScopedIfElse()
 void TestScopedIfElse2()
 {
     auto module = MakeHostModuleEmitter("IfElse2");
-    module.DeclarePrintf();
 
     auto fn = module.BeginMainFunction();
-    fn.For(10, [](IRFunctionEmitter& fn, llvm::Value* index) {
+    fn.For(10, [](IRFunctionEmitter& fn, auto index) {
         fn.Printf("Index: ", { index });
         auto cmp1 = fn.Comparison(TypedComparison::lessThan, index, fn.Literal<int>(3));
         auto cmp2 = fn.Comparison(TypedComparison::greaterThan, index, fn.Literal<int>(6));
         fn.If(cmp1, [](IRFunctionEmitter& fn) {
-              fn.Print("< 3\n");
-          }).ElseIf(cmp2, [](IRFunctionEmitter& fn) {
+            fn.Print("< 3\n");
+        }).ElseIf(cmp2, [](IRFunctionEmitter& fn) {
             fn.Print("> 6\n");
-          }).Else([](IRFunctionEmitter& fn) {
+        }).Else([](IRFunctionEmitter& fn) {
             fn.Print("neither < 3 or > 6\n");
         });
     });

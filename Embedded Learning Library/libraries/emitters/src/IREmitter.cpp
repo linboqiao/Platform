@@ -123,9 +123,21 @@ namespace emitters
         return llvm::ArrayType::get(Type(type), size);
     }
 
+    llvm::ArrayType* IREmitter::ArrayType(VariableType type, size_t rows, size_t columns)
+    {
+        auto rowType = llvm::ArrayType::get(Type(type), columns);
+        return llvm::ArrayType::get(rowType, rows);
+    }
+
     llvm::ArrayType* IREmitter::ArrayType(llvm::Type* type, size_t size)
     {
         return llvm::ArrayType::get(type, size);
+    }
+
+    llvm::ArrayType* IREmitter::ArrayType(llvm::Type* type, size_t rows, size_t columns)
+    {
+        auto rowType = llvm::ArrayType::get(type, columns);
+        return llvm::ArrayType::get(rowType, rows);
     }
 
     llvm::VectorType* IREmitter::VectorType(VariableType type, size_t size)
@@ -919,7 +931,7 @@ namespace emitters
         return _irBuilder.CreateGEP(pArray, pOffset, name);
     }
 
-    llvm::Value* IREmitter::Pointer(llvm::GlobalVariable* pArray)
+    llvm::Value* IREmitter::DereferenceGlobalPointer(llvm::Value* pArray)
     {
         assert(pArray != nullptr);
         llvm::Value* derefArguments[1]{
@@ -1030,9 +1042,21 @@ namespace emitters
         return _irBuilder.CreateAlloca(Type(type), Literal(static_cast<int>(size)));
     }
 
+    llvm::AllocaInst* IREmitter::StackAllocate(VariableType type, size_t rows, size_t columns)
+    {
+        auto rowType = ArrayType(Type(type), columns);
+        return _irBuilder.CreateAlloca(rowType, Literal(static_cast<int>(rows)));
+    }
+
     llvm::AllocaInst* IREmitter::StackAllocate(llvm::Type* type, size_t size)
     {
         return _irBuilder.CreateAlloca(type, Literal(static_cast<int>(size)));
+    }
+
+    llvm::AllocaInst* IREmitter::StackAllocate(llvm::Type* type, size_t rows, size_t columns)
+    {
+        auto rowType = ArrayType(type, columns);
+        return _irBuilder.CreateAlloca(rowType, Literal(static_cast<int>(rows)));
     }
 
     llvm::BranchInst* IREmitter::Branch(llvm::Value* pConditionValue, llvm::BasicBlock* pThenBlock, llvm::BasicBlock* pElseBlock)

@@ -12,24 +12,41 @@ namespace nodes
 {
     template <typename ValueType>
     SourceNode<ValueType>::SourceNode()
-        : SourceNode({}, math::TensorShape{ 0, 0, 0 }, "", nullptr)
+        : SourceNode({}, model::MemoryShape{ 0 }, "", nullptr)
     {
     }
 
     template <typename ValueType>
     SourceNode<ValueType>::SourceNode(const model::PortElements<nodes::TimeTickType>& input, size_t inputVectorSize, const std::string& sourceFunctionName, SourceFunction<ValueType> source)
-        : SourceNode(input, math::TensorShape{ inputVectorSize, 1, 1 }, sourceFunctionName, source)
+        : SourceNode(input, model::MemoryShape{ static_cast<int>(inputVectorSize) }, sourceFunctionName, source)
     {
     }
 
     template <typename ValueType>
-    SourceNode<ValueType>::SourceNode(const model::PortElements<nodes::TimeTickType>& input, const math::TensorShape& shape, const std::string& sourceFunctionName, SourceFunction<ValueType> source)
-        : model::SourceNodeBase(_input, _output, shape, sourceFunctionName),
+    SourceNode<ValueType>::SourceNode(const model::PortElements<nodes::TimeTickType>& input, const model::MemoryShape& shape, const std::string& sourceFunctionName, SourceFunction<ValueType> source)
+        : model::SourceNodeBase(_input, _output, sourceFunctionName),
         _input(this, input, defaultInputPortName),
-        _output(this, defaultOutputPortName, shape.Size()),
+        _output(this, defaultOutputPortName, shape),
         _source(source == nullptr ? [](auto&){ return false; } : source)
     {
-        _bufferedSample.resize(shape.Size());
+        _bufferedSample.resize(shape.NumElements());
+    }
+
+    template <typename ValueType>
+    SourceNode<ValueType>::SourceNode(const model::PortElements<nodes::TimeTickType>& input, const model::PortMemoryLayout& layout, const std::string& sourceFunctionName, SourceFunction<ValueType> source)
+        : model::SourceNodeBase(_input, _output, sourceFunctionName),
+        _input(this, input, defaultInputPortName),
+        _output(this, defaultOutputPortName, layout),
+        _source(source == nullptr ? [](auto&){ return false; } : source)
+    {
+        _bufferedSample.resize(layout.NumElements());
+    }
+
+    template <typename ValueType>
+    void SourceNode<ValueType>::SetInput(std::vector<ValueType> inputValues)
+    {
+        assert(_bufferedSample.size() == inputValues.size());
+        _bufferedSample = inputValues;
     }
 
     template <typename ValueType>
@@ -68,18 +85,23 @@ namespace nodes
         UNUSED(bufferedSampleTime);
 
         // Callback function
-        const emitters::NamedVariableTypeList parameters = { { "input", emitters::GetPointerType(emitters::GetVariableType<ValueType>()) } };
+        const emitters::NamedVariableTypeList parameters = { { "context", emitters::VariableType::BytePointer },
+                                                             { "input", emitters::GetPointerType(emitters::GetVariableType<ValueType>()) } };
         std::string prefixedName(compiler.GetNamespacePrefix() + "_" + GetCallbackName());
         module.DeclareFunction(prefixedName, emitters::GetVariableType<bool>(), parameters);
         module.IncludeInCallbackInterface(prefixedName, "SourceNode");
 
         llvm::Function* pSamplingFunction = module.GetFunction(prefixedName);
 
+        // look up our global context object
+        auto context = module.GlobalPointer(compiler.GetNamespacePrefix() + "_context", emitters::VariableType::Byte);
+        auto globalContext = function.Load(context);
+        
         // Locals
         auto sampleTime = function.ValueAt(pInput, function.Literal(0));
 
         // Invoke the callback and optionally interpolate.
-        function.Call(pSamplingFunction, { function.PointerOffset(pBufferedSample, 0) });
+        function.Call(pSamplingFunction, { globalContext, function.PointerOffset(pBufferedSample, 0) });
 
         // TODO: Interpolate if there is a sample, and currentTime > sampleTime
         // Note: currentTime can be retrieved via currentTime = function.ValueAt(pInput, function.Literal(1));
@@ -130,7 +152,7 @@ namespace nodes
         archiver[defaultInputPortName] << _input;
         archiver[defaultOutputPortName] << _output;
         archiver["sourceFunctionName"] << GetCallbackName();
-        archiver["shape"] << static_cast<std::vector<size_t>>(GetShape());
+        archiver["shape"] << GetShape().ToVector();
     }
 
     template <typename ValueType>
@@ -144,10 +166,9 @@ namespace nodes
         archiver["sourceFunctionName"] >> sourceFunctionName;
         SetCallbackName(sourceFunctionName);
 
-        std::vector<size_t> shapeVector;
+        std::vector<int> shapeVector;
         archiver["shape"] >> shapeVector;
-        SetShape(math::TensorShape{ shapeVector });
-        _output.SetSize(GetShape().Size());
+        SetShape({ shapeVector });
     }
 
     template <typename ValueType>
@@ -162,14 +183,10 @@ namespace nodes
         llvm::Value* pOutput = compiler.EnsurePortEmitted(output);
 
         auto numValues = output.Size();
-        auto forLoop = function.ForLoop();
-        forLoop.Begin(numValues);
-        {
-            auto i = forLoop.LoadIterationVariable();
+        function.For(numValues, [sample, pOutput](emitters::IRFunctionEmitter& function, llvm::Value* i) {
             auto value = function.ValueAt(sample, i);
             function.SetValueAt(pOutput, i, value);
-        }
-        forLoop.End();
+        });
     }
 
     template <typename ValueType>

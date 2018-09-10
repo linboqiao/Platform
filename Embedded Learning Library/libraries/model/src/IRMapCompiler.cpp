@@ -9,6 +9,7 @@
 #include "IRMapCompiler.h"
 #include "CompilableNode.h"
 #include "CompilableNodeUtilities.h"
+#include "IRMetadata.h"
 #include "IRModelProfiler.h"
 #include "ModelOptimizer.h"
 #include "OptimizationPassRegistry.h"
@@ -22,10 +23,21 @@
 // utils
 #include "Logger.h"
 
+// stl
+#include <tuple>
+
 namespace ell
 {
 namespace model
 {
+    namespace
+    {
+        bool IsConvolutionalLayerNode(const Node& node)
+        {
+            return (node.GetRuntimeTypeName().find("ConvolutionalLayerNode") == 0);
+        }
+    }
+
     using namespace logging;
 
     IRMapCompiler::IRMapCompiler()
@@ -34,29 +46,16 @@ namespace model
     }
 
     IRMapCompiler::IRMapCompiler(const MapCompilerOptions& settings)
-        : MapCompiler(settings), _moduleEmitter(settings.moduleName, settings.compilerSettings), _profiler()
+        : MapCompiler(settings), _moduleEmitter(settings.moduleName, settings.compilerSettings), _profiler(), _optimizer(settings)
     {
         Log() << "Initializing IR map compiler" << EOL;
-
-        _moduleEmitter.SetCompilerOptions(GetMapCompilerOptions().compilerSettings);
-        _moduleEmitter.SetTargetTriple(GetCompilerOptions().targetDevice.triple);
-
-        _moduleEmitter.SetTargetDataLayout(GetCompilerOptions().targetDevice.dataLayout);
-        Log() << "Target device triple: " << GetCompilerOptions().targetDevice.triple << EOL
-              << "Target device layout: " << GetCompilerOptions().targetDevice.dataLayout << EOL;
-
-        if (settings.compilerSettings.includeDiagnosticInfo)
-        {
-            _moduleEmitter.DeclarePrintf();
-            Log() << "Including diagnostic information in IR" << EOL;
-        }
-
         Log() << "Initializing optimizer" << EOL;
         OptimizationPassRegistry::AddPassesToOptimizer(_optimizer, settings.optimizerSettings);
 
         _nodeRegions.emplace_back();
     }
 
+    // EnsureValidMap fixes up the model if necessary and checks that inputs/outputs are compilable
     void IRMapCompiler::EnsureValidMap(Map& map)
     {
         if (map.NumInputPorts() != 1)
@@ -72,38 +71,37 @@ namespace model
         Log() << "Ensuring map is valid..." << EOL;
         // if output isn't a simple port, add an output node to model
         auto out = map.GetOutput(0);
-        ell::math::TensorShape shape{ out.Size(), 1, 1 }; // default shape from PortElementsBase::Size()
+        MemoryShape shape{ static_cast<int>(out.Size()) }; // default shape from PortElementsBase::Size()
         auto outNodes = map.GetOutputNodes();
-        if (outNodes.size() > 0)
+        if (!outNodes.empty())
         {
             shape = outNodes[0]->GetShape();
             Log() << "Output nodes present. Setting shape to first output node" << EOL;
-
         }
-        Log() << "Map output shape is " << shape << EOL;
+
         if (!out.IsFullPortOutput())
         {
             Log() << "Map output is not a port output, creating one..." << EOL;
             model::OutputNodeBase* outputNode = nullptr;
             switch (out.GetPortType())
             {
-                case model::Port::PortType::boolean:
-                    outputNode = map.GetModel().AddNode<model::OutputNode<bool>>(model::PortElements<bool>(out), shape);
-                    break;
-                case model::Port::PortType::integer:
-                    outputNode = map.GetModel().AddNode<model::OutputNode<int>>(model::PortElements<int>(out), shape);
-                    break;
-                case model::Port::PortType::bigInt:
-                    outputNode = map.GetModel().AddNode<model::OutputNode<int64_t>>(model::PortElements<int64_t>(out), shape);
-                    break;
-                case model::Port::PortType::smallReal:
-                    outputNode = map.GetModel().AddNode<model::OutputNode<float>>(model::PortElements<float>(out), shape);
-                    break;
-                case model::Port::PortType::real:
-                    outputNode = map.GetModel().AddNode<model::OutputNode<double>>(model::PortElements<double>(out), shape);
-                    break;
-                default:
-                    throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
+            case model::Port::PortType::boolean:
+                outputNode = map.GetModel().AddNode<model::OutputNode<bool>>(model::PortElements<bool>(out), shape);
+                break;
+            case model::Port::PortType::integer:
+                outputNode = map.GetModel().AddNode<model::OutputNode<int>>(model::PortElements<int>(out), shape);
+                break;
+            case model::Port::PortType::bigInt:
+                outputNode = map.GetModel().AddNode<model::OutputNode<int64_t>>(model::PortElements<int64_t>(out), shape);
+                break;
+            case model::Port::PortType::smallReal:
+                outputNode = map.GetModel().AddNode<model::OutputNode<float>>(model::PortElements<float>(out), shape);
+                break;
+            case model::Port::PortType::real:
+                outputNode = map.GetModel().AddNode<model::OutputNode<double>>(model::PortElements<double>(out), shape);
+                break;
+            default:
+                throw utilities::InputException(utilities::InputExceptionErrors::typeMismatch);
             }
 
             map.ResetOutput(0, outputNode->GetOutputPort());
@@ -113,6 +111,12 @@ namespace model
     std::string IRMapCompiler::GetNamespacePrefix() const
     {
         return GetModule().GetModuleName();
+    }
+
+    std::string IRMapCompiler::GetGlobalName(const Node& node, const std::string& baseName) const 
+    {
+        // e.g "ELL_GRUNodeReset_1541".
+        return GetNamespacePrefix() + "_" + baseName + "_" + node.GetId().ToString();
     }
 
     std::string IRMapCompiler::GetPredictFunctionName() const
@@ -125,11 +129,22 @@ namespace model
         Log() << "Compile called for map" << EOL;
         EnsureValidMap(map);
 
+        //
+        // Temporary special-purpose code to allow the "SetConvolutionMethod" optimization pass to work.
+        // When refinement is an integrated part of optimization, then this special-case code will disappear.
+        //
         Log() << "Refining the model..." << EOL;
-        model::TransformContext context{ this, [this](const model::Node& node) { return node.IsCompilable(this) ? model::NodeAction::compile : model::NodeAction::refine; } };
-        map.Refine(context);
+        model::TransformContext noRefineConvNodesContext{ this, [this](const model::Node& node) { return IsConvolutionalLayerNode(node) || node.IsCompilable(this) ? model::NodeAction::compile : model::NodeAction::refine; } };
+        map.Refine(noRefineConvNodesContext);
 
         Log() << "Optimizing the model..." << EOL;
+        map.Optimize(_optimizer);
+
+        Log() << "Refining the model again..." << EOL;
+        model::TransformContext refineContext{ this, [this](const model::Node& node) { return node.IsCompilable(this) ? model::NodeAction::compile : model::NodeAction::refine; } };
+        map.Refine(refineContext);
+
+        Log() << "Optimizing the model again..." << EOL;
         map.Optimize(_optimizer);
 
         // Renaming callbacks based on map compiler parameters
@@ -158,7 +173,31 @@ namespace model
         _profiler.EmitModelProfilerFunctions();
 
         auto module = std::make_unique<emitters::IRModuleEmitter>(std::move(_moduleEmitter));
-        return IRCompiledMap(std::move(map), GetMapCompilerOptions().mapFunctionName, std::move(module));
+
+        if (GetMapCompilerOptions().compilerSettings.optimize)
+        {
+            // Save callback declarations in case they get optimized away
+            std::vector<std::tuple<std::string, llvm::FunctionType*, std::vector<std::string>>> savedCallbacks;
+            auto callbacks = emitters::GetFunctionsWithTag(*module, emitters::c_callbackFunctionTagName);
+            for (auto& callbackInfo : callbacks)
+            {
+                savedCallbacks.emplace_back(callbackInfo.function->getName(), callbackInfo.function->getFunctionType(), callbackInfo.values);
+            }
+
+            emitters::IROptimizer optimizer(*module);
+            optimizer.AddStandardPasses();
+            module->Optimize(optimizer);
+
+            // Reinsert callback declarations after optimization
+            for (const auto& savedCallback : savedCallbacks)
+            {
+                auto functionName = std::get<0>(savedCallback);
+                module->DeclareFunction(functionName, std::get<1>(savedCallback));
+                module->IncludeInCallbackInterface(functionName, std::get<2>(savedCallback)[0]);
+            }
+        }
+
+        return IRCompiledMap(std::move(map), GetMapCompilerOptions().mapFunctionName, GetMapCompilerOptions(), std::move(module), GetMapCompilerOptions().verifyJittedModule);
     }
 
     void IRMapCompiler::EmitModelAPIFunctions(const Map& map)
@@ -207,7 +246,7 @@ namespace model
         }
     }
 
-    void IRMapCompiler::EmitShapeConditionals(emitters::IRFunctionEmitter& fn, std::vector<ell::math::TensorShape> shapes)
+    void IRMapCompiler::EmitShapeConditionals(emitters::IRFunctionEmitter& fn, std::vector<MemoryShape> shapes)
     {
         auto shapeType = _moduleEmitter.GetStruct(TensorShapeName);
         auto arguments = fn.Arguments().begin();
@@ -244,10 +283,12 @@ namespace model
                 auto followBlock = fn.BeginBlock("FollowBlock" + labelSuffix);
                 auto thenBlock = fn.BeginBlock("ThenBlock" + labelSuffix);
                 {
-                    math::TensorShape shape = *ptr;
-                    fn.Store(rowsPtr, fn.Literal((int)shape.NumRows()));
-                    fn.Store(columnsPtr, fn.Literal((int)shape.NumColumns()));
-                    fn.Store(channelsPtr, fn.Literal((int)shape.NumChannels()));
+                    MemoryShape shape = *ptr;
+                    shape.Resize(3);
+
+                    fn.Store(rowsPtr, fn.Literal<int>(shape[0]));
+                    fn.Store(columnsPtr, fn.Literal<int>(shape[1]));
+                    fn.Store(channelsPtr, fn.Literal<int>(shape[2]));
                     fn.Return();
                 }
                 auto elseBlock = fn.BeginBlock("ElseBlock" + labelSuffix);
@@ -315,7 +356,7 @@ namespace model
         fn.IncludeInHeader();
 
         auto nodes = map.GetInputNodes();
-        std::vector<math::TensorShape> shapes;
+        std::vector<MemoryShape> shapes;
         for (auto ptr = nodes.begin(), end = nodes.end(); ptr != end; ptr++)
         {
             const ell::model::InputNodeBase* node = *ptr;
@@ -334,14 +375,14 @@ namespace model
         auto voidType = llvm::Type::getVoidTy(context);
         auto int32Type = llvm::Type::getInt32Ty(context);
 
-        const emitters::NamedLLVMTypeList parameters = { { "index", int32Type },  { "shape", shapeType->getPointerTo() } };
+        const emitters::NamedLLVMTypeList parameters = { { "index", int32Type }, { "shape", shapeType->getPointerTo() } };
         const std::string functionName = GetNamespacePrefix() + "_GetOutputShape";
 
         auto fn = _moduleEmitter.BeginFunction(functionName, voidType, parameters);
         fn.IncludeInHeader();
 
         auto nodes = map.GetOutputNodes();
-        std::vector<math::TensorShape> shapes;
+        std::vector<MemoryShape> shapes;
         for (auto ptr = nodes.begin(), end = nodes.end(); ptr != end; ptr++)
         {
             const ell::model::OutputNodeBase* node = *ptr;

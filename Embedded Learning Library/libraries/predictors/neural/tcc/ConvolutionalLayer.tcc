@@ -6,99 +6,71 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// #include "DiagonalConvolution.h"
+#include "SimpleConvolution.h"
+#include "UnrolledConvolution.h"
+#include "WinogradConvolution.h"
+
 namespace ell
 {
 namespace predictors
 {
-    namespace neural
+namespace neural
+{
+    template <typename ElementType>
+    ConvolutionalLayer<ElementType>::ConvolutionalLayer(const LayerParameters& layerParameters, const ConvolutionalParameters& convolutionalParameters, TensorType weights)
+        : Layer<ElementType>(layerParameters), _convolutionalParameters(convolutionalParameters), _weights(std::move(weights)), _shapedInput{ _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() }, _weightsMatrix(_layerParameters.outputShape.NumChannels(), _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels()), _outputMatrix{ NumOutputChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() },
+            _originalConvolutionMethod(convolutionalParameters.method)
     {
-
-        template <typename ElementType>
-        ConvolutionalLayer<ElementType>::ConvolutionalLayer(const LayerParameters& layerParameters, const ConvolutionalParameters& convolutionalParameters, TensorType weights)
-            : Layer<ElementType>(layerParameters), _convolutionalParameters(convolutionalParameters), _weights(std::move(weights)), _shapedInput{ _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() }, _weightsMatrix(_layerParameters.outputShape.NumChannels(), _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels()), _outputMatrix{ NumOutputChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() }
+        if (_weights.GetDataPointer() == nullptr)
         {
-            if (_weights.GetDataPointer() == nullptr)
-            {
-                throw utilities::InputException(utilities::InputExceptionErrors::nullReference, "weights tensor has null data field");
-            }
-
-            if (_weights.Size() != (_output.NumChannels() * _layerParameters.input.NumChannels() * convolutionalParameters.receptiveField * convolutionalParameters.receptiveField))
-            {
-                throw utilities::InputException(utilities::InputExceptionErrors::sizeMismatch, "weights dimensions for a convolutional layer should be the size of the receptive field volume * number of filters");
-            }
-
-            if (_convolutionalParameters.method == ConvolutionMethod::diagonal)
-            {
-                // Verify that we meet the criteria for doing Diagonal method. If not,
-                // choose the normal method.
-                if ((_convolutionalParameters.receptiveField % 2 == 0) || _convolutionalParameters.stride != 1)
-                {
-                    _convolutionalParameters.method = ConvolutionMethod::unrolled;
-                }
-            }
-
-            ComputeWeightsMatrix();
+            throw utilities::InputException(utilities::InputExceptionErrors::nullReference, "weights tensor has null data field");
         }
 
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::Compute()
+        _isDepthwiseSeparable = (_weights.NumChannels() == 1) && (_layerParameters.input.NumChannels() > 1);
+        if (_isDepthwiseSeparable && (_output.NumChannels() != _layerParameters.input.NumChannels()))
         {
-            auto output = GetOutputMinusPadding();
-            auto& input = _layerParameters.input;
+            throw utilities::InputException(utilities::InputExceptionErrors::sizeMismatch, "Input and output channel sizes must match for a depthwise-separable convolutional layer");
+        }
+        else if (!_isDepthwiseSeparable && (_weights.Size() != (_output.NumChannels() * _layerParameters.input.NumChannels() * convolutionalParameters.receptiveField * convolutionalParameters.receptiveField)))
+        {
+            throw utilities::InputException(utilities::InputExceptionErrors::sizeMismatch, "weights dimensions for a convolutional layer should be the size of the receptive field volume * number of filters");
+        }
 
+        CalculateConvolutionMethod();
+        ComputeWeightsMatrix();
+    }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::Compute()
+    {
+        auto output = GetOutputMinusPadding();
+        auto& input = _layerParameters.input;
+        auto stride = static_cast<int>(_convolutionalParameters.stride);
+
+        if (!_isDepthwiseSeparable)
+        {
             switch (_convolutionalParameters.method)
             {
             case ConvolutionMethod::simple:
             {
-                const int filterRows = static_cast<int>(_convolutionalParameters.receptiveField);
-                const int filterColumns = filterRows;
-                const int outputRows = static_cast<int>(output.NumRows());
-                const int outputColumns = static_cast<int>(output.NumColumns());
                 const int numFilters = static_cast<int>(output.NumChannels());
-                for (int filterIndex = 0; filterIndex < numFilters; ++filterIndex)
-                {
-                    const auto filterOffset = filterIndex * filterRows;
-                    for (int i = 0; i < outputRows; ++i)
-                    {
-                        for (int j = 0; j < outputColumns; ++j)
-                        {
-                            ElementType accum = 0;
-                            for (int filterRowIndex = 0; filterRowIndex < filterRows; ++filterRowIndex)
-                            {
-                                for (int filterColumnIndex = 0; filterColumnIndex < filterColumns; ++filterColumnIndex)
-                                {
-                                    auto signalVector = input.template GetSlice<math::Dimension::channel>(i + filterRowIndex, j + filterColumnIndex);
-                                    auto filterVector = _weights.template GetSlice<math::Dimension::channel>(filterOffset + filterRowIndex, filterColumnIndex);
-                                    accum += math::Dot(signalVector, filterVector);
-                                }
-                            }
-                            output(i, j, filterIndex) = accum;
-                        }
-                    }
-                }
+                dsp::Convolve2DSimple(input, _weights, numFilters, stride, output);
             }
             break;
             case ConvolutionMethod::unrolled:
             {
-                // Re-shape input.
-                ReceptiveFieldToColumns(input, _shapedInput);
-
-                // Multiply reshaped input and weights.
-                math::MultiplyScaleAddUpdate(static_cast<ElementType>(1.0), _weightsMatrix, _shapedInput, static_cast<ElementType>(0.0), _outputMatrix);
-
-                // Re-shape the output into the output tensor
-                for (size_t i = 0; i < output.NumRows(); i++)
-                {
-                    for (size_t j = 0; j < output.NumColumns(); j++)
-                    {
-                        for (size_t k = 0; k < output.NumChannels(); k++)
-                        {
-                            size_t row = k;
-                            size_t column = (i * output.NumColumns()) + j;
-                            output(i, j, k) = _outputMatrix(row, column);
-                        }
-                    }
-                }
+                const int numFilters = static_cast<int>(output.NumChannels());
+                auto result = dsp::Convolve2DUnrolled(input, _weights, numFilters, stride);
+                output.CopyFrom(result);
+            }
+            break;
+            case ConvolutionMethod::winograd:
+            {
+                assert(stride == 1);
+                const int numFilters = static_cast<int>(output.NumChannels());
+                auto result = dsp::Convolve2DWinograd(input, _weights, numFilters);
+                output.CopyFrom(result);
             }
             break;
             case ConvolutionMethod::diagonal:
@@ -147,101 +119,162 @@ namespace predictors
                 }
             }
             break;
+
+            default:
+                throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented, "Convolution method not supported");
             }
         }
-
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::ReceptiveFieldToColumns(ConstTensorReferenceType input, MatrixType& shapedInput)
+        else // if _isDepthwiseSeparable
         {
-            size_t fieldVolumeSize = _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels();
-            size_t convolutionalHeight = NumOutputRowsMinusPadding();
-            size_t convolutionalWidth = NumOutputColumnsMinusPadding();
+            const int numFilters = 1;
+            const size_t numInputRows = input.NumRows();
+            const size_t numInputColumns = input.NumColumns();
+            const size_t numOutputRows = output.NumRows();
+            const size_t numOutputColumns = output.NumColumns();
+            const size_t filterRows = _convolutionalParameters.receptiveField;
 
-            for (size_t f = 0; f < fieldVolumeSize; f++)
+            for (size_t channel = 0; channel < output.NumChannels(); ++channel)
             {
-                size_t fieldDepth = f % _layerParameters.input.NumChannels();
-                size_t fieldColumn = (f / _layerParameters.input.NumChannels()) % _convolutionalParameters.receptiveField;
-                size_t fieldRow = (f / _layerParameters.input.NumChannels()) / _convolutionalParameters.receptiveField;
+                using TensorType = typename Layer<ElementType>::TensorType;
+                using TensorReferenceType = typename Layer<ElementType>::TensorReferenceType;
 
-                size_t rowOffset = 0;
-                for (size_t h = 0; h < convolutionalHeight; h++)
+                TensorType weights(_weights.GetSubTensor(filterRows * channel, 0, 0, filterRows, filterRows, 1));
+                const auto& inputChannelTensor = input.GetSubTensor(0, 0, channel, numInputRows, numInputColumns, 1);
+                TensorReferenceType outputChannelTensor = output.GetSubTensor(0, 0, channel, numOutputRows, numOutputColumns, 1);
+
+                switch (_convolutionalParameters.method)
                 {
-                    size_t colOffset = 0;
-                    for (size_t w = 0; w < convolutionalWidth; w++)
-                    {
-                        size_t input_row = rowOffset + fieldRow;
-                        size_t input_col = colOffset + fieldColumn;
-
-                        shapedInput(f, h * convolutionalWidth + w) = input(input_row, input_col, fieldDepth);
-                        colOffset += _convolutionalParameters.stride;
-                    }
-                    rowOffset += _convolutionalParameters.stride;
+                case ConvolutionMethod::simple:
+                {
+                    auto result = dsp::Convolve2DSimpleDepthwiseSeparable(inputChannelTensor, weights, numFilters, stride);
+                    outputChannelTensor.CopyFrom(result);
+                }
+                break;
+                case ConvolutionMethod::unrolled:
+                {
+                    auto result = dsp::Convolve2DUnrolled(inputChannelTensor, weights, numFilters, stride);
+                    outputChannelTensor.CopyFrom(result);
+                }
+                break;
+                case ConvolutionMethod::winograd:
+                {
+                    auto result = dsp::Convolve2DWinogradDepthwiseSeparable(inputChannelTensor, weights, numFilters, stride);
+                    outputChannelTensor.CopyFrom(result);
+                }
+                break;
+                default:
+                    throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented, "Convolution method not supported for depthwise separable convolution");
                 }
             }
+
         }
 
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::WriteToArchive(utilities::Archiver& archiver) const
+    }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::WriteToArchive(utilities::Archiver& archiver) const
+    {
+        Layer<ElementType>::WriteToArchive(archiver);
+
+        archiver["receptiveField"] << _convolutionalParameters.receptiveField;
+        archiver["stride"] << _convolutionalParameters.stride;
+        archiver["method"] << static_cast<int>(_originalConvolutionMethod);
+        archiver["numFiltersAtATime"] << static_cast<int>(_convolutionalParameters.numFiltersAtATime);
+
+        math::TensorArchiver::Write(_weights, "weights", archiver);
+    }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::ReadFromArchive(utilities::Unarchiver& archiver)
+    {
+        Layer<ElementType>::ReadFromArchive(archiver);
+
+        archiver["receptiveField"] >> _convolutionalParameters.receptiveField;
+        archiver["stride"] >> _convolutionalParameters.stride;
+        int method;
+        archiver["method"] >> method;
+        _originalConvolutionMethod = static_cast<ConvolutionMethod>(method);
+        int numFilters;
+        archiver["numFiltersAtATime"] >> numFilters;
+        _convolutionalParameters.numFiltersAtATime = static_cast<size_t>(numFilters);
+
+        math::TensorArchiver::Read(_weights, "weights", archiver);
+        _isDepthwiseSeparable = (_weights.NumChannels() == 1);
+        ComputeWeightsMatrix();
+        CalculateConvolutionMethod();
+        InitializeIOMatrices();
+    }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::ComputeWeightsMatrix()
+    {
+        if (_convolutionalParameters.method == ConvolutionMethod::unrolled)
         {
-            Layer<ElementType>::WriteToArchive(archiver);
-
-            archiver["receptiveField"] << _convolutionalParameters.receptiveField;
-            archiver["stride"] << _convolutionalParameters.stride;
-            archiver["method"] << static_cast<int>(_convolutionalParameters.method);
-            archiver["numFiltersAtATime"] << static_cast<int>(_convolutionalParameters.numFiltersAtATime);
-
-            math::TensorArchiver::Write(_weights, "weights", archiver);
-        }
-
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::ReadFromArchive(utilities::Unarchiver& archiver)
-        {
-            Layer<ElementType>::ReadFromArchive(archiver);
-
-            archiver["receptiveField"] >> _convolutionalParameters.receptiveField;
-            archiver["stride"] >> _convolutionalParameters.stride;
-            int method;
-            archiver["method"] >> method;
-            _convolutionalParameters.method = static_cast<ConvolutionMethod>(method);
-            int numFilters;
-            archiver["numFiltersAtATime"] >> numFilters;
-            _convolutionalParameters.numFiltersAtATime = static_cast<size_t>(numFilters);
-
-            math::TensorArchiver::Read(_weights, "weights", archiver);
-            ComputeWeightsMatrix();
-            InitializeIOMatrices();
-        }
-
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::ComputeWeightsMatrix()
-        {
-            if (_convolutionalParameters.method == ConvolutionMethod::unrolled)
+            _weightsMatrix = { _layerParameters.outputShape.NumChannels(), _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels() };
+            // Use the unrolled method
+            // Reshape the weights
+            auto flattened = _weights.ReferenceAsMatrix();
+            for (size_t startRow = 0; startRow < flattened.NumRows() / _convolutionalParameters.receptiveField; startRow++)
             {
-                _weightsMatrix = { _layerParameters.outputShape.NumChannels(), _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels() };
-                // Use the unrolled method
-                // Reshape the weights
-                auto flattened = _weights.ReferenceAsMatrix();
-                for (size_t startRow = 0; startRow < flattened.NumRows() / _convolutionalParameters.receptiveField; startRow++)
+                for (size_t row = 0; row < _convolutionalParameters.receptiveField; row++)
                 {
-                    for (size_t row = 0; row < _convolutionalParameters.receptiveField; row++)
+                    auto weightsVector = flattened.GetMajorVector(startRow * _convolutionalParameters.receptiveField + row);
+                    for (size_t i = 0; i < weightsVector.Size(); i++)
                     {
-                        auto weightsVector = flattened.GetMajorVector(startRow * _convolutionalParameters.receptiveField + row);
-                        for (size_t i = 0; i < weightsVector.Size(); i++)
-                        {
-                            const size_t columnOffset = row * weightsVector.Size();
-                            _weightsMatrix(startRow, columnOffset + i) = weightsVector[i];
-                        }
+                        const size_t columnOffset = row * weightsVector.Size();
+                        _weightsMatrix(startRow, columnOffset + i) = weightsVector[i];
                     }
                 }
             }
-        }
-
-        template <typename ElementType>
-        void ConvolutionalLayer<ElementType>::InitializeIOMatrices()
-        {
-            _shapedInput = { _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() };
-            _outputMatrix = { NumOutputChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() };
         }
     }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::InitializeIOMatrices()
+    {
+        _shapedInput = { _convolutionalParameters.receptiveField * _convolutionalParameters.receptiveField * _layerParameters.input.NumChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() };
+        _outputMatrix = { NumOutputChannels(), NumOutputRowsMinusPadding() * NumOutputColumnsMinusPadding() };
+    }
+
+    template <typename ElementType>
+    void ConvolutionalLayer<ElementType>::CalculateConvolutionMethod()
+    {
+        _convolutionalParameters.method = _originalConvolutionMethod;
+        switch (_convolutionalParameters.method)
+        {
+        case ConvolutionMethod::automatic:
+            _convolutionalParameters.method = _isDepthwiseSeparable ? ConvolutionMethod::simple : ConvolutionMethod::unrolled;
+            break;
+        case ConvolutionMethod::simple:
+        case ConvolutionMethod::unrolled: // fallthrough
+            // do nothing
+            break;
+        case ConvolutionMethod::diagonal:
+            // Verify that we meet the criteria for doing Diagonal method. If not,
+            // choose the normal method.
+            if ((_convolutionalParameters.receptiveField % 2 == 0) || _convolutionalParameters.stride != 1)
+            {
+                _convolutionalParameters.method = _isDepthwiseSeparable ? ConvolutionMethod::simple : ConvolutionMethod::unrolled;
+            }
+            break;
+        case ConvolutionMethod::winograd:
+            // Verify that we meet the criteria for doing Winograd method. If not,
+            // choose the normal method.
+            if (_convolutionalParameters.stride != 1 || _convolutionalParameters.receptiveField != 3)
+            {
+                _convolutionalParameters.method = _isDepthwiseSeparable ? ConvolutionMethod::simple : ConvolutionMethod::unrolled;
+            }
+            break;
+        }
+        if (_isDepthwiseSeparable)
+        {
+            // Verify we can use a workable method for depthwise separable convolutions.
+            if ((_convolutionalParameters.method != ConvolutionMethod::unrolled) && (_convolutionalParameters.method != ConvolutionMethod::simple) && (_convolutionalParameters.method != ConvolutionMethod::winograd))
+            {
+                _convolutionalParameters.method = ConvolutionMethod::simple;
+            }
+        }
+    }
+}
 }
 }

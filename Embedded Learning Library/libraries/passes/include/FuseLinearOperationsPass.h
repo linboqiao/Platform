@@ -30,7 +30,7 @@ namespace passes
         ///
         /// <param name="node"> The current node being visited. </param>
         /// <param name="transformer"> The transformer object operating on the model. </param>
-        void OptimizeNode(const model::Node& node, model::ModelTransformer& transformer) override;
+        void OptimizeNode(const model::Node& node, const model::MapCompilerOptions& settings, model::ModelOptimizerContext& context) const override;
 
         /// <summary> Add this pass type to the global pass registry. </summary>
         static void AddToRegistry();

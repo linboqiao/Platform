@@ -54,7 +54,7 @@ namespace nodes
     }
 
     template <typename ValueType>
-    void DTWDistanceNode<ValueType>::Reset() const
+    void DTWDistanceNode<ValueType>::Reset()
     {
         std::fill(_d.begin() + 1, _d.end(), std::numeric_limits<ValueType>::max());
         _d[0] = 0.0;
@@ -176,10 +176,7 @@ namespace nodes
         function.StoreZero(protoIndex);
         function.StoreZero(dLast);
 
-        auto forLoop = function.ForLoop();
-        forLoop.Begin(_prototypeLength);
-        {
-            auto iMinusOne = forLoop.LoadIterationVariable();
+        function.For(_prototypeLength, [pD, dLast, bestDist, dist, protoIndex, pInput, pPrototypeVector, this](emitters::IRFunctionEmitter& function, llvm::Value* iMinusOne) {
             auto i = function.Operator(emitters::TypedOperator::add, iMinusOne, function.Literal(1));
 
             auto d_iMinus1 = function.ValueAt(pD, iMinusOne);
@@ -187,37 +184,29 @@ namespace nodes
             auto dPrev_i = function.ValueAt(pD, i);
 
             function.Store(bestDist, d_iMinus1);
-            emitters::IRIfEmitter if1 = function.If(emitters::TypedComparison::lessThanFloat, dPrev_i, d_iMinus1);
-            {
-                function.Store(bestDist, dPrev_i);
-            }
-            if1.End();
 
-            emitters::IRIfEmitter if2 = function.If(emitters::TypedComparison::lessThanFloat, dPrev_iMinus1, function.Load(bestDist));
-            {
+            function.If(emitters::TypedComparison::lessThanFloat, dPrev_i, d_iMinus1, [bestDist, dPrev_i](auto& function) {
+                function.Store(bestDist, dPrev_i);
+            });
+
+            function.If(emitters::TypedComparison::lessThanFloat, dPrev_iMinus1, function.Load(bestDist), [bestDist, dPrev_iMinus1](auto& function) {
                 function.Store(bestDist, dPrev_iMinus1);
-            }
-            if2.End();
+            });
 
             // Get dist
             function.StoreZero(dist);
-            auto diffLoop = function.ForLoop();
-            diffLoop.Begin(_sampleDimension);
-            {
-                auto j = diffLoop.LoadIterationVariable();
+            function.For(_sampleDimension, [dist, protoIndex, pInput, pPrototypeVector](emitters::IRFunctionEmitter& function, llvm::Value* j) {
                 llvm::Value* inputValue = function.ValueAt(pInput, j);
                 llvm::Value* protoValue = function.ValueAt(pPrototypeVector, function.Load(protoIndex));
                 llvm::Value* diff = function.Operator(emitters::GetSubtractForValueType<ValueType>(), inputValue, protoValue);
                 llvm::Value* absDiff = function.Call(function.GetModule().GetRuntime().GetAbsFunction<ValueType>(), { diff });
                 function.OperationAndUpdate(dist, emitters::GetAddForValueType<ValueType>(), absDiff);
                 function.OperationAndUpdate(protoIndex, emitters::TypedOperator::add, function.Literal(1));
-            }
-            diffLoop.End();
+            });
 
             function.OperationAndUpdate(bestDist, emitters::GetAddForValueType<ValueType>(), function.Load(dist)); // x += dist;
             function.SetValueAt(pD, i, function.Load(bestDist)); // d[i] = x;
-        }
-        forLoop.End();
+        });
 
         function.Store(pResult, function.Operator(emitters::GetDivideForValueType<ValueType>(), function.Load(bestDist), function.Literal(static_cast<ValueType>(_prototypeVariance))));
     }
@@ -228,8 +217,20 @@ namespace nodes
         Node::WriteToArchive(archiver);
         archiver[defaultInputPortName] << _input;
         archiver[defaultOutputPortName] << _output;
-        // archiver["prototype"] << _prototype;
-        throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
+        // Since we know the prototype  will always be rectangular, we
+        // archive it as a matrix here.
+        auto numRows = _prototype.size();
+        auto numColumns = _prototype[0].size();
+        std::vector<double> elements;
+        elements.reserve(numRows * numColumns);
+        for (const auto& row : _prototype) 
+        {
+            elements.insert(elements.end(), row.begin(), row.end());
+        }
+        archiver["prototype_rows"] << numRows;
+        archiver["prototype_columns"] << numColumns;
+        math::Matrix<double, math::MatrixLayout::columnMajor> temp(numRows, numColumns, elements);
+        math::MatrixArchiver::Write(temp, "prototype", archiver);
     }
 
     template <typename ValueType>
@@ -238,8 +239,19 @@ namespace nodes
         Node::ReadFromArchive(archiver);
         archiver[defaultInputPortName] >> _input;
         archiver[defaultOutputPortName] >> _output;
-        // archiver["prototype"] >> _prototype;
-        throw utilities::LogicException(utilities::LogicExceptionErrors::notImplemented);
+        size_t numRows;
+        size_t numColumns;
+        archiver["prototype_rows"] >> numRows;
+        archiver["prototype_columns"] >> numColumns;
+        math::Matrix<ValueType, math::MatrixLayout::columnMajor> temp(numRows, numColumns);
+        math::MatrixArchiver::Read(temp, "prototype", archiver);
+        for (size_t i = 0; i < numRows; i++)
+        {
+            _prototype.emplace_back(temp.GetRow(i).ToArray());
+        }
+        _prototypeLength = _prototype.size();
+        _d.resize(_prototypeLength + 1);
+        _s.resize(_prototypeLength + 1);
     }
 }
 }
