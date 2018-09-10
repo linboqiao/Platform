@@ -1,3 +1,17 @@
+# Copyright (c) 2018 by contributors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # coding: utf-8
 """Setup xlearn package."""
 from __future__ import absolute_import
@@ -9,6 +23,7 @@ import sys
 
 from setuptools import find_packages
 from setuptools import setup
+from setuptools.command.build_py import build_py
 from setuptools.command.install import install
 from setuptools.command.sdist import sdist
 
@@ -64,13 +79,17 @@ def compile_cpp():
         for suffix in suffix_list:
             if os.path.isfile('lib/libxlearn_api.{}'.format(suffix)):
                 shutil.copy('lib/libxlearn_api.{}'.format(suffix), '../xlearn/')
+        if os.path.isdir('../build/lib/xlearn/'):
+            for suffix in suffix_list:
+                if os.path.isfile('lib/libxlearn_api.{}'.format(suffix)):
+                    shutil.copy('lib/libxlearn_api.{}'.format(suffix), '../build/lib/xlearn/')
 
     os.chdir(old_working_dir)
     
 class CustomInstall(install):
     
     def run(self):
-        compile_cpp();
+        # compile_cpp();
         install.run(self)
 
 class CustomSdist(sdist):
@@ -79,9 +98,15 @@ class CustomSdist(sdist):
         copy_files()
         sdist.run(self)
 
+class CustomBuildPy(build_py):
+
+    def run(self):
+        compile_cpp()
+        build_py.run(self)
+
 if __name__ == "__main__":
     setup(name='xlearn',
-          version="0.20.a1",
+          version="0.31.a1",
           description="xLearn Python Package",
           maintainer='Chao Ma',
           maintainer_email='mctt90@gmail.com',
@@ -89,6 +114,7 @@ if __name__ == "__main__":
           cmdclass={
               'install': CustomInstall,
               'sdist': CustomSdist,
+              'build_py': CustomBuildPy,
           },
           packages=find_packages(),
           # this will use MANIFEST.in during install where we specify additional files,

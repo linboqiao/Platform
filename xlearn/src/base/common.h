@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,8 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file provides the following basic facilities to make
-programming convenient.
+This file provides the following basic facilities to 
+make programming convenient.
 */
 
 #ifndef XLEARN_BASE_COMMON_H_

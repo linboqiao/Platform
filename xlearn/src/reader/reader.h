@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
 This file defines the Reader class that is responsible for
 reading data from data source.
 */
@@ -102,6 +100,12 @@ class Reader {
   // Free the memory of data matrix.
   virtual void Clear() = 0;
 
+  // Return the Reader type
+  virtual std::string Type() = 0;
+
+  // This method is only used in On-disk Reader
+  virtual void SetBlockSize(int size) = 0;
+
   // Wether current dataset has label y ?
   bool inline has_label() { return has_label_; }
 
@@ -165,6 +169,17 @@ class InmemReader : public Reader {
     data_buf_.Release();
   }
 
+  // Return the Reader type
+  virtual std::string Type() {
+    return "in-memory";
+  }
+
+  // This method is only used in On-Disk Reader
+  virtual void SetBlockSize(int size) {
+    // Do nothing
+    return;
+  }
+
   // If shuffle data ?
   virtual inline void SetShuffle(bool shuffle) {
     this->shuffle_ = shuffle;
@@ -211,7 +226,7 @@ class OndiskReader : public Reader {
  public:
   // Constructor and Destructor
   OndiskReader() 
-    : block_size_(kDefautBlockSize) {  }
+    : block_size_(500) {  }  // 500 MB by default
   ~OndiskReader() { 
     Clear();
     Close(file_ptr_); 
@@ -232,6 +247,17 @@ class OndiskReader : public Reader {
     if (block_ != nullptr) {
       delete [] block_;
     }
+  }
+
+  // Return the Reader type
+  virtual std::string Type() {
+    return "on-disk";
+  }
+
+  // This method is only used in On-Disk Reader
+  virtual void SetBlockSize(int size) {
+    CHECK_GT(size, 0);
+    block_size_ = size;
   }
 
   // We cannot set shuffle for OndiskReader
@@ -293,6 +319,17 @@ class CopyReader : public Reader {
   // Free the memory of data matrix.
   virtual void Clear() {
     data_buf_.Release();
+  }
+
+  // Return Reader type
+  virtual std::string Type() {
+    return "copy";
+  }
+
+  // This method is only used in On-Disk Reader
+  virtual void SetBlockSize(int size) {
+    // Do nothing
+    return;
   }
 
   // If shuffle data ?

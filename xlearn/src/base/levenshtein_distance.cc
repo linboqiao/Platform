@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,16 +15,14 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file if the implementation of StrSimilar class.
+This file is the implementation of StrSimilar class.
 */
 
 #include <algorithm>
 
 #include "src/base/levenshtein_distance.h"
 
-#define  min(a,b) ((a<b)?a:b)
+#define min(a,b) ((a<b)?a:b)
 
 // Find str in string list.
 // Return true if we can find str in target string list.

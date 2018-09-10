@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
 This file defines the basic hyper-parameters used by xLearn.
 */
 
@@ -57,9 +55,6 @@ struct HyperParam {
   For now, it can be 'acc', 'prec', 'recall', 
   'f1', 'mae', 'rmsd', 'mape', or 'none' */
   std::string metric = "none";
-  /* Block size for on-disk training.
-  On default this value will be set to 500 MB */
-  uint64 block_size = 500;
   /* Number of thread existing in the thread pool */
   int thread_number = 0;
 //------------------------------------------------------------------------------
@@ -121,6 +116,8 @@ struct HyperParam {
   std::string output_file;
   /* Filename of log file */
   std::string log_file = "/tmp/xlearn_log";
+  /* Block size for on-disk training */
+  int block_size = 500;  // 500 MB
 //------------------------------------------------------------------------------
 // Parameters for validation
 //------------------------------------------------------------------------------
@@ -132,6 +129,8 @@ struct HyperParam {
   /* True for using early-stop and
   False for not */
   bool early_stop = true;
+  /* Early stop window size */
+  int stop_window = 2;
   /* Convert predition output to 0 and 1 */
   bool sign = false;
   /* Convert predition output using sigmoid */

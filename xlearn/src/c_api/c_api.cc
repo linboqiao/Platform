@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,7 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file is the implementation of C API for xLearn.
+This file is the implementation of C API.
 */
 
 #include <string>
@@ -251,6 +249,8 @@ XL_DLL int XLearnSetInt(XL *out, const char *key, const int value) {
   	xl->GetHyperParam().block_size = value;
   } else if (strcmp(key, "nthread") == 0) {
     xl->GetHyperParam().thread_number = value;
+  } else if (strcmp(key, "stop_window") == 0) {
+    xl->GetHyperParam().stop_window = value;
   }
   API_END();
 }
@@ -269,6 +269,8 @@ XL_DLL int XLearnGetInt(XL *out, const char *key, int *value) {
     *value = xl->GetHyperParam().block_size;
   } else if (strcmp(key, "nthread") == 0) {
     *value = xl->GetHyperParam().thread_number;
+  } else if (strcmp(key, "stop_window") == 0) {
+    *value = xl->GetHyperParam().stop_window;
   }
   API_END();
 }

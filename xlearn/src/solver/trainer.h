@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
 This file defines the Trainer class.
 */
 
@@ -52,9 +50,11 @@ class Trainer {
                   Loss* loss,
                   Metric* metric,
                   bool early_stop,
+                  int stop_window,
                   bool quiet) {
     CHECK_NE(reader_list.empty(), true);
     CHECK_GT(epoch, 0);
+    CHECK_GT(stop_window, 0);
     CHECK_NOTNULL(model);
     CHECK_NOTNULL(loss);
     // Do not check metric == nullptr
@@ -64,6 +64,7 @@ class Trainer {
     loss_ = loss;
     metric_ = metric;
     early_stop_ = early_stop;
+    stop_window_ = stop_window;
     quiet_ = quiet;
   }
 
@@ -95,6 +96,8 @@ class Trainer {
   int epoch_;
   /* Using early-stopping ? */
   bool early_stop_;
+  /* Window size for early stopping */
+  int stop_window_;
   /* quiet training ? */
   bool quiet_;
   /* Model parameter */

@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
 This file is the implementation of the Trainer class.
 */
 
@@ -28,8 +27,6 @@ This file is the implementation of the Trainer class.
 #include "src/base/timer.h"
 
 namespace xLearn {
-
-const int kStopWindow = 2;
 
 /*********************************************************
  *  Show head info                                       *
@@ -200,8 +197,8 @@ void Trainer::train(std::vector<Reader*>& train_reader,
         if (te_info.loss_val >= prev_loss) {
           stop_window++;
           // If the validation loss goes up conntinuously
-          // in 3 epoch, we stop training
-          if (stop_window == kStopWindow) { break; }
+          // in stop_window epoch, we stop training
+          if (stop_window == stop_window_) { break; }
         } else {
           stop_window = 0;
         }

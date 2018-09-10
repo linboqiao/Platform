@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,7 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file is the implementation of Parser.
+This file is the implementation of Parser class.
 */
 
 #include "src/reader/parser.h"
@@ -186,13 +184,12 @@ void FFMParser::Parse(char* buf, uint64 size, DMatrix& matrix) {
 
 //------------------------------------------------------------------------------
 // CSVParser parses the following data format:
-// [feat_1 feat_2 feat_3 ... feat_n y1]
-// [feat_1 feat_2 feat_3 ... feat_n y2]
+// [y1 feat_1 feat_2 feat_3 ... feat_n]
+// [y2 feat_1 feat_2 feat_3 ... feat_n]
 // Note that, if the csv file doesn't contain the
-// label y, the user should add a placeholder to the dataset
-// by themselves. Otherwise, the parser will treat the last
-// element as the label y.
-// Note that we treat the first feature as feature 0.
+// label y, users should add a placeholder to the dataset
+// by themselves (Also in test data). Otherwise, the parser 
+// will treat the first element as the label y.
 //------------------------------------------------------------------------------
 void CSVParser::Parse(char* buf, uint64 size, DMatrix& matrix) {
   CHECK_NOTNULL(buf);

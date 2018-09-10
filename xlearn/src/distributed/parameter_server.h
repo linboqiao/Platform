@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,8 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file defines the KVStore class, which allows workers to get
-and set the model parameters.
+This file defines the KVStore class, which allows workers 
+to get and set the model parameters.
 */
 
 #ifndef XLEARN_DISTRIBUTED_KVSTORE_H_
@@ -55,7 +53,7 @@ class KVStore {
    // | value:  | 0.2 | 1.0 | 0.5 | 1.0 | 0.33 |  0.7 |  0.8 |
    //  ------------------------------------------------------
    virtual void Push(const std::vector<index_t>& key, 
-   	                 const std::vector<real_t>& value);
+   	               const std::vector<real_t>& value);
 
    // Push a list of (key, value_list) into store.
    // For example:
@@ -69,8 +67,8 @@ class KVStore {
    //  ------------------------------------------------------
    // This method is useful for the FM and FFM task.
    virtual void Push(const std::vector<index_t>& key, 
-   	                 const std::vector<real_t>& value_list, 
-   	                 const size_t length);
+   	               const std::vector<real_t>& value_list, 
+   	               const size_t length);
 
    // Pull the values for a list of keys from store.
    // For example:
@@ -79,7 +77,7 @@ class KVStore {
    // | value:  | 0.2 | 1.0 | 0.5 | 1.0 | 0.33 |  0.7 |  0.8 |
    //  ------------------------------------------------------
    virtual void Pull(const std::vector<index_t>& key, 
-   	                 std::vector<real_t>* value);
+   	               std::vector<real_t>* value);
 
    // Pull the value list for a list of keys from store.
    // For example:
@@ -93,8 +91,8 @@ class KVStore {
    //  ------------------------------------------------------
    // This method is useful for the FM and FFM task.
    virtual void Pull(const std::vector<index_t>& key, 
-   	                 std::vector<real_t>* value_list, 
-   	                 const size_t length);
+   	               std::vector<real_t>* value_list, 
+   	               const size_t length);
 
    //---------------------------------------------------------------------------
    // In xLearn, we use a simple range strategy for model partiton

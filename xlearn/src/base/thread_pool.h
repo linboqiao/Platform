@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// Copyright (c) 2016 by contributors. All Rights Reserved.
+// Copyright (c) 2018 by contributors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,8 @@
 //------------------------------------------------------------------------------
 
 /*
-Author: Chao Ma (mctt90@gmail.com)
-
-This file provides a simple implementation of the thread
-pool that used by xLearn.
+This file provides a simple implementation of the 
+thread pool that used by xLearn.
 */
 
 #ifndef XLEARN_BASE_THREAD_POOL_H_
@@ -76,6 +74,8 @@ private:
     // synchronization
     std::mutex queue_mutex;
     std::condition_variable condition;
+    std::mutex sync_mutex;
+    std::condition_variable sync_condition;
     bool stop;
     std::atomic_int sync { 0 };
 };
@@ -101,6 +101,10 @@ inline ThreadPool::ThreadPool(size_t threads)
             }
          task();
          sync++;
+         {
+           std::unique_lock<std::mutex> lock(this->sync_mutex);
+           sync_condition.notify_one();
+         }
       }
     }
   );
@@ -129,7 +133,10 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
 
 // Wait all thread to finish their jobs
 inline void ThreadPool::Sync(int wait_count) {
-  while (sync != wait_count) {}
+  std::unique_lock<std::mutex> lock(sync_mutex);
+  this->sync_condition.wait(lock, [&]() {
+    return sync == wait_count;
+  });
   sync = 0;
 }
 
