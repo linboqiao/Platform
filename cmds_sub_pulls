@@ -1,0 +1,6 @@
+git subtree pull -P "keras" git@github.com:keras-team/keras.git master
+git subtree pull -P "EasyConvNet" git@github.com:shaisha/EasyConvNet.git master
+git subtree pull -P "Embedded Learning Library" git@github.com:Microsoft/ELL.git master
+git subtree pull -P "picasso" git@github.com:merantix/picasso.git master
+git subtree pull -P "xlearn" git@github.com:aksnzhy/xlearn.git master
+git push

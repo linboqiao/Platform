@@ -13,6 +13,8 @@ from __future__ import print_function
 from keras.models import Model, load_model
 from keras.layers import Input
 import numpy as np
+import os
+from keras.utils.data_utils import get_file
 
 batch_size = 64  # Batch size for training.
 epochs = 100  # Number of epochs to train for.
@@ -20,6 +22,8 @@ latent_dim = 256  # Latent dimensionality of the encoding space.
 num_samples = 10000  # Number of samples to train on.
 # Path to the data txt file on disk.
 data_path = 'fra-eng/fra.txt'
+
+data_path = os.path.join(os.path.expanduser('~'), '.keras','datasets','fra-eng','fra.txt')
 
 # Vectorize the data.  We use the same approach as the training script.
 # NOTE: the data must be identical, in order for the character -> integer
